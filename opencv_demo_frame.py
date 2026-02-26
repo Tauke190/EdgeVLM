@@ -1,4 +1,5 @@
 import argparse
+
 parser = argparse.ArgumentParser(description="finetine ViCLIP for closed-set actdet")
 parser.add_argument("--REC", action='store_true',
                     help="record stream")
@@ -15,7 +16,7 @@ parser.add_argument("-font", type=float, default=1.0,
 parser.add_argument("-line", type=int, default=1,
                     help="line thickness")
 parser.add_argument("-weights", type=str,
-                    default='weights/avak_aws_stats_flt_b16_txtaug_txtlora/avak_b16_10.pt',
+                    default='weights/avak_b16_11.pt',
                     #default='weights/k700_stats_flt_b16_txtaug_txtlora/avak_b16_11.pt',
                     help="path to trained weights")
 parser.add_argument("-thresh", type=float, default=0.25,
