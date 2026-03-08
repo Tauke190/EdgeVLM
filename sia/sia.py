@@ -1,6 +1,6 @@
 import os
 import logging
-from pkg_resources import packaging
+import packaging
 
 import torch
 import numpy as np

@@ -71,7 +71,10 @@ postprocess = PostProcessViz()
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = get_sia(size='b', pretrain=None, det_token_num=20, text_lora=True, num_frames=9)['sia']
-model.load_state_dict(torch.load(args.weights, weights_only=True), strict=False)
+model.load_state_dict(
+    torch.load(args.weights, map_location=device, weights_only=True),
+    strict=False,
+)
 model.to(device)
 model.eval()
 print('Model Loaded')

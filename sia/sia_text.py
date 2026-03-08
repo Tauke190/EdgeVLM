@@ -1,7 +1,6 @@
 import os
 import logging
 from collections import OrderedDict
-from pkg_resources import packaging
 
 import numpy as np
 import torch
