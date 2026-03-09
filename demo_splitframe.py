@@ -57,7 +57,14 @@ from util.box_ops import box_cxcywh_to_xyxy
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 model = get_sia(size='b', pretrain=None, det_token_num=20, text_lora=True, num_frames=9)['sia']
-model.load_state_dict(torch.load('weights/avak_aws_stats_flt_b16_txtaug_txtlora/avak_b16_10.pt', weights_only=True), strict=False)
+model.load_state_dict(
+    torch.load(
+        'weights/avak_aws_stats_flt_b16_txtaug_txtlora/avak_b16_10.pt',
+        map_location=device,
+        weights_only=True,
+    ),
+    strict=False,
+)
 model.to(device)
 model.eval()
 print('Model Loaded')

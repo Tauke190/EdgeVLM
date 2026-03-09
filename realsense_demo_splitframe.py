@@ -30,7 +30,14 @@ from util.box_ops import box_cxcywh_to_xyxy
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 pretrain = os.path.join("viclip", "ViCLIP-B_InternVid-FLT-10M.pth")
 model = get_ezact(size='b', pretrain=pretrain, det_token_num=100, lora=False, text_lora=True, num_frames=9, merge=False)['ezact']
-model.load_state_dict(torch.load('weights/avak_stats_flt_b16_txtaug_txtlora/avak_b16_11.pt', weights_only=True), strict=False)
+model.load_state_dict(
+    torch.load(
+        'weights/avak_stats_flt_b16_txtaug_txtlora/avak_b16_11.pt',
+        map_location=device,
+        weights_only=True,
+    ),
+    strict=False,
+)
 model.to(device)
 model.eval()
 print('Model Loaded')
