@@ -100,9 +100,6 @@ weights/
 # Ignore Markdown files
 *.md
 
-# Ignore shell scripts
-*.sh
-
 # Ignore text files
 *.txt
 
