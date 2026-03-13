@@ -170,7 +170,43 @@ https://<jetson-host-or-vpn-ip>:47990
 
 If the pair is already established, Moonlight should connect directly.
 
-## 9. Watch and interact with the demo
+## 9. Access the Sunshine web UI over SSH
+
+If the Sunshine web UI is not directly reachable from the client machine, tunnel it over SSH.
+
+Run this on the client machine:
+
+```bash
+ssh -L 47990:localhost:47990 <jetson-user>@<jetson-host-or-vpn-ip>
+```
+
+Keep that SSH session open. Then open this URL in the client machine's browser:
+
+```text
+https://localhost:47990
+```
+
+This forwards the Jetson's local Sunshine web UI port to the client machine.
+
+Notes:
+
+- Sunshine uses HTTPS, so the browser may warn about a self-signed certificate
+- if the browser warns, continue past the warning and open the page anyway
+- if port `47990` is already in use on the client machine, pick another local port such as `47991`
+
+Example with a different local port:
+
+```bash
+ssh -L 47991:localhost:47990 <jetson-user>@<jetson-host-or-vpn-ip>
+```
+
+Then open:
+
+```text
+https://localhost:47991
+```
+
+## 10. Watch and interact with the demo
 
 Once Moonlight is connected, you should see the virtual desktop from `DISPLAY=:99`.
 
@@ -181,7 +217,7 @@ During the demo:
 - `q` exits the OpenCV window
 - the demo window should remain visible through Moonlight because both Sunshine and the demo are running on `:99`
 
-## 10. Recommended terminal layout
+## 11. Recommended terminal layout
 
 This works well:
 
@@ -191,7 +227,7 @@ This works well:
 
 That separation makes it easier to restart the demo without restarting Sunshine every time.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 If Moonlight connects but the screen is blank:
 
@@ -219,9 +255,9 @@ If Sunshine is running but pairing fails, check whether the Sunshine web UI is r
 https://<jetson-host-or-vpn-ip>:47990
 ```
 
-If `start-sunshine.sh` fails on `sudo`, the user needs sudo access on the Jetson because the script currently changes sysctl values, adjusts MTU, kills old processes, and launches Sunshine with `sudo`.
+If `start-sunshine.sh` fails on `sudo`, you need sudo access on the Jetson because the script currently changes sysctl values, adjusts MTU, kills old processes, and launches Sunshine with `sudo`.
 
-## 12. Minimal repeat workflow
+## 13. Minimal repeat workflow
 
 After the repo and `.venv` already exist, the usual remote workflow is just:
 
