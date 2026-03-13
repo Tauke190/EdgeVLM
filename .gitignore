@@ -97,12 +97,6 @@ weights/
 # Ignore CSV files
 *.csv
 
-# Ignore Markdown files
-*.md
-
-# Ignore shell scripts
-*.sh
-
 # Ignore text files
 *.txt
 
