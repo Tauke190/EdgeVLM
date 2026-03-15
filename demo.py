@@ -3,6 +3,14 @@ import numpy as np
 import cv2
 import time
 import argparse
+import torch
+import torch.nn.functional as F
+from torchvision.transforms import v2
+from torchvision.ops import batched_nms
+from sia import get_sia, PostProcessViz
+from datasets import avatextaug
+
+
 parser = argparse.ArgumentParser(description="Offline Demo with SIA")
 parser.add_argument("-thresh", type=float, default=0.25,
                     help="cosine threshold")
@@ -43,12 +51,7 @@ cv2.imshow('Demo', out_frame)
 print('Press any key to start buffering')
 cv2.waitKey(0)
 
-import torch
-import torch.nn.functional as F
-from torchvision.transforms import v2
-from torchvision.ops import batched_nms
-from sia import get_sia, PostProcessViz
-from datasets import avatextaug
+
 
 from util.box_ops import box_cxcywh_to_xyxy
 

@@ -117,7 +117,6 @@ utils/
 sia/
 
 # Ignore scripts
-scripts/
 
 # Ignore demo result
 pred_video.mp4
