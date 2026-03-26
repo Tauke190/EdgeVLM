@@ -22,6 +22,10 @@ def load_json(path):
         return json.load(handle)
 
 
+def load_run_metrics(run_dir):
+    return load_json(Path(run_dir) / "metrics.json")
+
+
 def write_json(path, payload):
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
@@ -102,6 +106,12 @@ def infer_git_commit():
 def write_run_summary(path, summary_lines):
     with open(path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(summary_lines) + "\n")
+
+
+def safe_pct_change(baseline, candidate):
+    if baseline in (None, 0) or candidate is None:
+        return None
+    return round((candidate - baseline) / baseline * 100.0, 3)
 
 
 def to_builtin(value):
