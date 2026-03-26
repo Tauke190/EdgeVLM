@@ -32,5 +32,7 @@
   "color": "green",
   "font_scale": 0.3,
   "line_thickness": 1,
+  "top_k_labels": 3,
+  "render_enabled": true,
   "system_metrics_interval_s": 1.0
 }
