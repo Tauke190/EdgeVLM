@@ -41,7 +41,25 @@ def parse_args():
         type=lambda value: value.split(","),
         help="Optional comma-separated action override.",
     )
+    parser.add_argument("--top-k-labels", type=int, help="Optional cap on labels rendered per box.")
+    parser.add_argument(
+        "--no-render",
+        action="store_true",
+        help="Disable drawing and video writing so timing focuses on non-render stages.",
+    )
     return parser.parse_args()
+
+
+def decode_text_labels(label_ids_per_box, score_values_per_box, captions, top_k_labels=None):
+    decoded_labels = []
+    decoded_scores = []
+    for label_ids, score_values in zip(label_ids_per_box, score_values_per_box):
+        if top_k_labels is not None:
+            label_ids = label_ids[:top_k_labels]
+            score_values = score_values[:top_k_labels]
+        decoded_labels.append([captions[index] for index in label_ids])
+        decoded_scores.append([float(score) for score in score_values])
+    return decoded_labels, decoded_scores
 
 
 def draw_predictions(frame, boxes, labels, scores, color, font_scale, thickness):
@@ -78,6 +96,10 @@ def main():
     captions = load_actions(config["actions_json"], actions_override=args.actions)
     device = config.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
     max_frames = args.max_frames or config.get("max_frames")
+    top_k_labels = args.top_k_labels if args.top_k_labels is not None else config.get("top_k_labels")
+    render_enabled = not args.no_render if args.no_render else False
+    if "render_enabled" in config and not args.no_render:
+        render_enabled = bool(config.get("render_enabled"))
 
     run_name = config.get("run_name", "offline_fp32_baseline")
     run_dir = make_run_dir(output_root, run_name)
@@ -93,6 +115,8 @@ def main():
             "output_root": str(output_root),
             "resolved_device": device,
             "resolved_actions": captions,
+            "top_k_labels": top_k_labels,
+            "render_enabled": render_enabled,
         },
     )
 
@@ -114,12 +138,14 @@ def main():
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     source_fps = cap.get(cv2.CAP_PROP_FPS)
     writer_fps = source_fps if source_fps and source_fps > 0 else config.get("output_fps", 25)
-    writer = cv2.VideoWriter(
-        str(output_video_path),
-        cv2.VideoWriter_fourcc(*config.get("video_codec", "mp4v")),
-        writer_fps,
-        (frame_width, frame_height),
-    )
+    writer = None
+    if render_enabled:
+        writer = cv2.VideoWriter(
+            str(output_video_path),
+            cv2.VideoWriter_fourcc(*config.get("video_codec", "mp4v")),
+            writer_fps,
+            (frame_width, frame_height),
+        )
 
     model = get_sia(
         size=config.get("model_size", "b"),
@@ -156,6 +182,7 @@ def main():
     capture_times = []
     preprocess_times = []
     postprocess_times = []
+    label_decode_times = []
     render_times = []
 
     system_monitor = SystemMonitor(
@@ -188,8 +215,12 @@ def main():
 
             inference_time = 0.0
             postprocess_time = 0.0
+            label_decode_time = 0.0
             render_time = 0.0
             detections = 0
+            labels = []
+            scores = []
+            boxes = []
 
             if len(buffer) > buffer_max_len:
                 buffer.pop(0)
@@ -206,25 +237,27 @@ def main():
 
                 postprocess_start = time.perf_counter()
                 result = postprocess(outputs, (frame_height, frame_width), human_conf=0.9, thresh=threshold)[0]
-                result["text_labels"] = [[captions[index] for index in label_ids] for label_ids in result["labels"]]
                 boxes = result["boxes"]
-                labels = result["text_labels"]
-                scores = result["scores"]
                 detections = len(boxes)
                 postprocess_time = time.perf_counter() - postprocess_start
 
-                render_start = time.perf_counter()
-                rendered_frame = draw_predictions(
-                    plotbuffer[mididx].transpose(1, 2, 0).astype(np.uint8),
-                    boxes,
-                    labels,
-                    scores,
-                    color,
-                    font_scale,
-                    thickness,
-                )
-                writer.write(rendered_frame)
-                render_time = time.perf_counter() - render_start
+                label_decode_start = time.perf_counter()
+                labels, scores = decode_text_labels(result["labels"], result["scores"], captions, top_k_labels)
+                label_decode_time = time.perf_counter() - label_decode_start
+
+                if render_enabled:
+                    render_start = time.perf_counter()
+                    rendered_frame = draw_predictions(
+                        plotbuffer[mididx].transpose(1, 2, 0).astype(np.uint8),
+                        boxes,
+                        labels,
+                        scores,
+                        color,
+                        font_scale,
+                        thickness,
+                    )
+                    writer.write(rendered_frame)
+                    render_time = time.perf_counter() - render_start
 
                 frames_written += 1
                 clips_processed += 1
@@ -237,6 +270,7 @@ def main():
             if inference_time > 0:
                 inference_times.append(inference_time)
                 postprocess_times.append(postprocess_time)
+                label_decode_times.append(label_decode_time)
                 render_times.append(render_time)
 
             stage_rows.append(
@@ -246,6 +280,7 @@ def main():
                     "preprocess_ms": round(preprocess_time * 1000.0, 3),
                     "inference_ms": round(inference_time * 1000.0, 3),
                     "postprocess_ms": round(postprocess_time * 1000.0, 3),
+                    "label_decode_ms": round(label_decode_time * 1000.0, 3),
                     "render_ms": round(render_time * 1000.0, 3),
                     "loop_ms": round(loop_time * 1000.0, 3),
                     "detections": detections,
@@ -254,7 +289,8 @@ def main():
     finally:
         system_monitor.stop()
         cap.release()
-        writer.release()
+        if writer is not None:
+            writer.release()
 
     elapsed_s = time.perf_counter() - start_wall
     metrics = {
@@ -268,6 +304,8 @@ def main():
         "sample_indices": sample_indices.tolist(),
         "threshold": threshold,
         "max_frames": max_frames,
+        "top_k_labels": top_k_labels,
+        "render_enabled": render_enabled,
         "monitor_source": system_monitor.source,
         "frames_read": frame_count,
         "frames_written": frames_written,
@@ -280,6 +318,7 @@ def main():
             "preprocess": summarize_series(preprocess_times),
             "inference": summarize_series(inference_times),
             "postprocess": summarize_series(postprocess_times),
+            "label_decode": summarize_series(label_decode_times),
             "render": summarize_series(render_times),
             "loop": summarize_series(loop_times),
         },
@@ -293,6 +332,7 @@ def main():
             "preprocess_ms",
             "inference_ms",
             "postprocess_ms",
+            "label_decode_ms",
             "render_ms",
             "loop_ms",
             "detections",
@@ -307,6 +347,8 @@ def main():
         f"Weights: {weights_path}",
         f"Device: {device}",
         f"Actions: {len(captions)}",
+        f"Top-k labels per box: {top_k_labels if top_k_labels is not None else 'all'}",
+        f"Render enabled: {render_enabled}",
         f"Monitor source: {system_monitor.source}",
         f"Frames read: {frame_count}",
         f"Frames written: {frames_written}",
@@ -315,8 +357,11 @@ def main():
         f"Effective FPS: {metrics['effective_fps']}",
         f"Inference mean ms: {metrics['timings']['inference']['mean_ms']}",
         f"Inference p95 ms: {metrics['timings']['inference']['p95_ms']}",
+        f"Postprocess mean ms: {metrics['timings']['postprocess']['mean_ms']}",
+        f"Label decode mean ms: {metrics['timings']['label_decode']['mean_ms']}",
+        f"Render mean ms: {metrics['timings']['render']['mean_ms']}",
         f"Loop mean ms: {metrics['timings']['loop']['mean_ms']}",
-        f"Output video: {output_video_path}",
+        f"Output video: {output_video_path if writer is not None else 'disabled'}",
     ]
     write_run_summary(run_dir / "run_summary.txt", summary_lines)
 
@@ -324,7 +369,8 @@ def main():
     print(f"Metrics: {run_dir / 'metrics.json'}")
     print(f"Stage timings: {run_dir / 'stage_timings.csv'}")
     print(f"System metrics: {run_dir / 'system_metrics.csv'}")
-    print(f"Output video: {output_video_path}")
+    if writer is not None:
+        print(f"Output video: {output_video_path}")
 
 
 if __name__ == "__main__":
