@@ -1,0 +1,21 @@
+{
+  "run_name": "live_fp32_baseline",
+  "video_device": 0,
+  "weights_path": "weights/avak_b16_11.pt",
+  "actions_json": "gpt/GPT_AVA.json",
+  "output_root": "results/baseline",
+  "output_video_name": "pred_live.mp4",
+  "device": "cuda",
+  "num_frames": 9,
+  "buffer_max_len": 18,
+  "img_size": [
+    240,
+    320
+  ],
+  "threshold": 0.25,
+  "color": "green",
+  "font_scale": 1.0,
+  "line_thickness": 1,
+  "system_metrics_interval_s": 1.0,
+  "notes": "Config scaffold for a future measured live baseline runner."
+}

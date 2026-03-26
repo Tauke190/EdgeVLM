@@ -11,4 +11,9 @@ Expected per-run artifacts:
 - `pred_video.mp4`
 - `run_summary.txt`
 
+Useful phase 1 commands:
+
+- `./.venv/bin/python tools/baseline_runner.py --config configs/baseline_offline.json`
+- `./.venv/bin/python tools/compare_runs.py --baseline-run results/baseline/<run_a> --candidate-run results/baseline/<run_b>`
+
 These run artifacts are intentionally left untracked by git. Keep only the lightweight directory structure and documentation in the repository.

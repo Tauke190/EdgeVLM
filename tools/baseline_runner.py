@@ -35,6 +35,7 @@ def parse_args():
     parser.add_argument("--video", help="Optional override for the input video path.")
     parser.add_argument("--weights", help="Optional override for the model weights path.")
     parser.add_argument("--output-root", help="Optional override for the results root directory.")
+    parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from the source video.")
     parser.add_argument(
         "--actions",
         type=lambda value: value.split(","),
@@ -76,6 +77,7 @@ def main():
     output_root = args.output_root or config["output_root"]
     captions = load_actions(config["actions_json"], actions_override=args.actions)
     device = config.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
+    max_frames = args.max_frames or config.get("max_frames")
 
     run_name = config.get("run_name", "offline_fp32_baseline")
     run_dir = make_run_dir(output_root, run_name)
@@ -175,6 +177,8 @@ def main():
                 break
 
             frame_count += 1
+            if max_frames and frame_count > max_frames:
+                break
             preprocess_start = time.perf_counter()
             raw_image = frame
             plotbuffer.append(raw_image.transpose(2, 0, 1))
@@ -258,6 +262,12 @@ def main():
         "weights_path": weights_path,
         "git_commit": infer_git_commit(),
         "device": device,
+        "num_actions": len(captions),
+        "num_frames_per_clip": num_frames,
+        "buffer_max_len": buffer_max_len,
+        "sample_indices": sample_indices.tolist(),
+        "threshold": threshold,
+        "max_frames": max_frames,
         "monitor_source": system_monitor.source,
         "frames_read": frame_count,
         "frames_written": frames_written,
@@ -296,6 +306,7 @@ def main():
         f"Video: {video_path}",
         f"Weights: {weights_path}",
         f"Device: {device}",
+        f"Actions: {len(captions)}",
         f"Monitor source: {system_monitor.source}",
         f"Frames read: {frame_count}",
         f"Frames written: {frames_written}",
