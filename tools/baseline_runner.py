@@ -1,0 +1,320 @@
+import argparse
+import time
+from pathlib import Path
+import sys
+
+import cv2
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torchvision.transforms import v2
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from sia import PostProcessViz, get_sia
+from tools.baseline_utils import (
+    infer_git_commit,
+    load_actions,
+    load_json,
+    make_run_dir,
+    resolve_color,
+    summarize_series,
+    to_builtin,
+    write_csv,
+    write_json,
+    write_run_summary,
+)
+from tools.system_monitor import SystemMonitor
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Measured offline baseline runner for SiA.")
+    parser.add_argument("--config", required=True, help="Path to a baseline config JSON file.")
+    parser.add_argument("--video", help="Optional override for the input video path.")
+    parser.add_argument("--weights", help="Optional override for the model weights path.")
+    parser.add_argument("--output-root", help="Optional override for the results root directory.")
+    parser.add_argument(
+        "--actions",
+        type=lambda value: value.split(","),
+        help="Optional comma-separated action override.",
+    )
+    return parser.parse_args()
+
+
+def draw_predictions(frame, boxes, labels, scores, color, font_scale, thickness):
+    rendered = frame.copy()
+    for box, label_list, score_list in zip(boxes, labels, scores):
+        box_np = box.detach().cpu().numpy()
+        start_point = (int(box_np[0]), int(box_np[1]))
+        end_point = (int(box_np[2]), int(box_np[3]))
+        cv2.rectangle(rendered, start_point, end_point, color, thickness)
+        offset = 0
+        for label, score in zip(label_list, score_list):
+            text = f"{label} {round(float(score), 2)}"
+            cv2.putText(
+                rendered,
+                text,
+                (int(box_np[0]) - 5, int(box_np[1]) + offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                color,
+                thickness,
+                cv2.LINE_AA,
+            )
+            offset += 20
+    return rendered
+
+
+def main():
+    args = parse_args()
+    config = load_json(args.config)
+
+    video_path = args.video or config["video_path"]
+    weights_path = args.weights or config["weights_path"]
+    output_root = args.output_root or config["output_root"]
+    captions = load_actions(config["actions_json"], actions_override=args.actions)
+    device = config.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
+
+    run_name = config.get("run_name", "offline_fp32_baseline")
+    run_dir = make_run_dir(output_root, run_name)
+    output_video_path = run_dir / config.get("output_video_name", "pred_video.mp4")
+    system_metrics_path = run_dir / "system_metrics.csv"
+
+    write_json(
+        run_dir / "config.json",
+        {
+            **config,
+            "video_path": video_path,
+            "weights_path": weights_path,
+            "output_root": str(output_root),
+            "resolved_device": device,
+            "resolved_actions": captions,
+        },
+    )
+
+    color = resolve_color(config.get("color", "green"))
+    font_scale = config.get("font_scale", 0.3)
+    thickness = config.get("line_thickness", 1)
+    img_height, img_width = config.get("img_size", [240, 320])
+    buffer_max_len = int(config.get("buffer_max_len", 72))
+    num_frames = int(config.get("num_frames", 9))
+    sample_stride = max(1, buffer_max_len // num_frames)
+    sample_indices = np.arange(0, buffer_max_len, sample_stride)[:num_frames]
+    threshold = float(config.get("threshold", 0.25))
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video '{video_path}'.")
+
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    source_fps = cap.get(cv2.CAP_PROP_FPS)
+    writer_fps = source_fps if source_fps and source_fps > 0 else config.get("output_fps", 25)
+    writer = cv2.VideoWriter(
+        str(output_video_path),
+        cv2.VideoWriter_fourcc(*config.get("video_codec", "mp4v")),
+        writer_fps,
+        (frame_width, frame_height),
+    )
+
+    model = get_sia(
+        size=config.get("model_size", "b"),
+        pretrain=config.get("pretrain"),
+        det_token_num=int(config.get("det_token_num", 20)),
+        text_lora=bool(config.get("text_lora", True)),
+        num_frames=num_frames,
+    )["sia"]
+    model.load_state_dict(
+        torch.load(weights_path, map_location=device, weights_only=True),
+        strict=False,
+    )
+    model.to(device)
+    model.eval()
+
+    normalizer = v2.Normalize(
+        config.get("normalize_mean", [0.485, 0.456, 0.406]),
+        config.get("normalize_std", [0.229, 0.224, 0.225]),
+    )
+    postprocess = PostProcessViz()
+
+    text_embeds = model.encode_text(captions)
+    text_embeds = F.normalize(text_embeds, dim=-1)
+
+    buffer = []
+    plotbuffer = []
+    mididx = buffer_max_len // 2
+    frame_count = 0
+    frames_written = 0
+    clips_processed = 0
+    stage_rows = []
+    inference_times = []
+    loop_times = []
+    capture_times = []
+    preprocess_times = []
+    postprocess_times = []
+    render_times = []
+
+    system_monitor = SystemMonitor(
+        system_metrics_path,
+        sample_interval_s=float(config.get("system_metrics_interval_s", 1.0)),
+    )
+    system_monitor.start()
+
+    start_wall = time.perf_counter()
+
+    try:
+        while True:
+            loop_start = time.perf_counter()
+
+            capture_start = time.perf_counter()
+            ret, frame = cap.read()
+            capture_time = time.perf_counter() - capture_start
+            if not ret:
+                break
+
+            frame_count += 1
+            preprocess_start = time.perf_counter()
+            raw_image = frame
+            plotbuffer.append(raw_image.transpose(2, 0, 1))
+            resized = cv2.resize(raw_image, (img_width, img_height), interpolation=cv2.INTER_NEAREST)
+            buffer.append(resized.transpose(2, 0, 1))
+            preprocess_time = time.perf_counter() - preprocess_start
+
+            inference_time = 0.0
+            postprocess_time = 0.0
+            render_time = 0.0
+            detections = 0
+
+            if len(buffer) > buffer_max_len:
+                buffer.pop(0)
+                plotbuffer.pop(0)
+
+                clip_tensor = torch.from_numpy(np.array(buffer)[sample_indices]).float() / 255.0
+                clip_tensor = normalizer(clip_tensor).unsqueeze(0).to(device)
+
+                inference_start = time.perf_counter()
+                with torch.no_grad():
+                    outputs = model.encode_vision(clip_tensor)
+                    outputs["pred_logits"] = F.normalize(outputs["pred_logits"], dim=-1) @ text_embeds.T
+                inference_time = time.perf_counter() - inference_start
+
+                postprocess_start = time.perf_counter()
+                result = postprocess(outputs, (frame_height, frame_width), human_conf=0.9, thresh=threshold)[0]
+                result["text_labels"] = [[captions[index] for index in label_ids] for label_ids in result["labels"]]
+                boxes = result["boxes"]
+                labels = result["text_labels"]
+                scores = result["scores"]
+                detections = len(boxes)
+                postprocess_time = time.perf_counter() - postprocess_start
+
+                render_start = time.perf_counter()
+                rendered_frame = draw_predictions(
+                    plotbuffer[mididx].transpose(1, 2, 0).astype(np.uint8),
+                    boxes,
+                    labels,
+                    scores,
+                    color,
+                    font_scale,
+                    thickness,
+                )
+                writer.write(rendered_frame)
+                render_time = time.perf_counter() - render_start
+
+                frames_written += 1
+                clips_processed += 1
+
+            loop_time = time.perf_counter() - loop_start
+
+            capture_times.append(capture_time)
+            preprocess_times.append(preprocess_time)
+            loop_times.append(loop_time)
+            if inference_time > 0:
+                inference_times.append(inference_time)
+                postprocess_times.append(postprocess_time)
+                render_times.append(render_time)
+
+            stage_rows.append(
+                {
+                    "frame_index": frame_count,
+                    "capture_ms": round(capture_time * 1000.0, 3),
+                    "preprocess_ms": round(preprocess_time * 1000.0, 3),
+                    "inference_ms": round(inference_time * 1000.0, 3),
+                    "postprocess_ms": round(postprocess_time * 1000.0, 3),
+                    "render_ms": round(render_time * 1000.0, 3),
+                    "loop_ms": round(loop_time * 1000.0, 3),
+                    "detections": detections,
+                }
+            )
+    finally:
+        system_monitor.stop()
+        cap.release()
+        writer.release()
+
+    elapsed_s = time.perf_counter() - start_wall
+    metrics = {
+        "video_path": video_path,
+        "weights_path": weights_path,
+        "git_commit": infer_git_commit(),
+        "device": device,
+        "monitor_source": system_monitor.source,
+        "frames_read": frame_count,
+        "frames_written": frames_written,
+        "clips_processed": clips_processed,
+        "elapsed_s": round(elapsed_s, 3),
+        "effective_fps": round(frames_written / elapsed_s, 3) if elapsed_s > 0 else None,
+        "source_fps": round(source_fps, 3) if source_fps and source_fps > 0 else None,
+        "timings": {
+            "capture": summarize_series(capture_times),
+            "preprocess": summarize_series(preprocess_times),
+            "inference": summarize_series(inference_times),
+            "postprocess": summarize_series(postprocess_times),
+            "render": summarize_series(render_times),
+            "loop": summarize_series(loop_times),
+        },
+    }
+
+    write_csv(
+        run_dir / "stage_timings.csv",
+        [
+            "frame_index",
+            "capture_ms",
+            "preprocess_ms",
+            "inference_ms",
+            "postprocess_ms",
+            "render_ms",
+            "loop_ms",
+            "detections",
+        ],
+        stage_rows,
+    )
+    write_json(run_dir / "metrics.json", to_builtin(metrics))
+
+    summary_lines = [
+        f"Run directory: {run_dir}",
+        f"Video: {video_path}",
+        f"Weights: {weights_path}",
+        f"Device: {device}",
+        f"Monitor source: {system_monitor.source}",
+        f"Frames read: {frame_count}",
+        f"Frames written: {frames_written}",
+        f"Clips processed: {clips_processed}",
+        f"Elapsed seconds: {metrics['elapsed_s']}",
+        f"Effective FPS: {metrics['effective_fps']}",
+        f"Inference mean ms: {metrics['timings']['inference']['mean_ms']}",
+        f"Inference p95 ms: {metrics['timings']['inference']['p95_ms']}",
+        f"Loop mean ms: {metrics['timings']['loop']['mean_ms']}",
+        f"Output video: {output_video_path}",
+    ]
+    write_run_summary(run_dir / "run_summary.txt", summary_lines)
+
+    print(f"Baseline run complete. Artifacts saved to: {run_dir}")
+    print(f"Metrics: {run_dir / 'metrics.json'}")
+    print(f"Stage timings: {run_dir / 'stage_timings.csv'}")
+    print(f"System metrics: {run_dir / 'system_metrics.csv'}")
+    print(f"Output video: {output_video_path}")
+
+
+if __name__ == "__main__":
+    main()
