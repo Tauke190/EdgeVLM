@@ -5,17 +5,36 @@
   "actions_json": "gpt/GPT_AVA.json",
   "output_root": "results/baseline",
   "output_video_name": "pred_live.mp4",
+  "output_fps": 20,
+  "video_codec": "mp4v",
   "device": "cuda",
+  "model_size": "b",
+  "pretrain": null,
+  "det_token_num": 20,
+  "text_lora": true,
   "num_frames": 9,
   "buffer_max_len": 18,
   "img_size": [
     240,
     320
   ],
+  "normalize_mean": [
+    0.485,
+    0.456,
+    0.406
+  ],
+  "normalize_std": [
+    0.229,
+    0.224,
+    0.225
+  ],
   "threshold": 0.25,
   "color": "green",
   "font_scale": 1.0,
   "line_thickness": 1,
+  "record_output": true,
+  "show_preview": false,
+  "disable_empty": false,
   "system_metrics_interval_s": 1.0,
-  "notes": "Config scaffold for a future measured live baseline runner."
+  "notes": "Measured live baseline config. Use show_preview=true only when you want an interactive window."
 }
