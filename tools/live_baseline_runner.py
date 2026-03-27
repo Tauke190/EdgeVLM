@@ -193,6 +193,9 @@ def main():
     capture_times = []
     preprocess_times = []
     postprocess_times = []
+    postprocess_filter_times = []
+    postprocess_nms_times = []
+    postprocess_threshold_times = []
     label_decode_times = []
     render_times = []
 
@@ -235,6 +238,9 @@ def main():
 
             inference_time = 0.0
             postprocess_time = 0.0
+            postprocess_filter_time = 0.0
+            postprocess_nms_time = 0.0
+            postprocess_threshold_time = 0.0
             label_decode_time = 0.0
             render_time = 0.0
             detections = 0
@@ -254,12 +260,22 @@ def main():
                 inference_time = time.perf_counter() - inference_start
 
                 postprocess_start = time.perf_counter()
-                result = postprocess(outputs, (frame_height, frame_width), human_conf=0.9, thresh=threshold)[0]
+                result, postprocess_breakdown = postprocess(
+                    outputs,
+                    (frame_height, frame_width),
+                    human_conf=0.9,
+                    thresh=threshold,
+                    return_stage_timings=True,
+                )
+                result = result[0]
                 boxes = result["boxes"]
                 label_ids = result["labels"]
                 raw_scores = result["scores"]
                 detections = len(boxes)
                 postprocess_time = time.perf_counter() - postprocess_start
+                postprocess_filter_time = postprocess_breakdown["human_filter_s"]
+                postprocess_nms_time = postprocess_breakdown["nms_s"]
+                postprocess_threshold_time = postprocess_breakdown["threshold_s"]
 
                 label_decode_start = time.perf_counter()
                 labels, scores = decode_text_labels(label_ids, raw_scores, captions, top_k_labels)
@@ -300,6 +316,9 @@ def main():
             if inference_time > 0:
                 inference_times.append(inference_time)
                 postprocess_times.append(postprocess_time)
+                postprocess_filter_times.append(postprocess_filter_time)
+                postprocess_nms_times.append(postprocess_nms_time)
+                postprocess_threshold_times.append(postprocess_threshold_time)
                 label_decode_times.append(label_decode_time)
                 render_times.append(render_time)
 
@@ -310,6 +329,9 @@ def main():
                     "preprocess_ms": round(preprocess_time * 1000.0, 3),
                     "inference_ms": round(inference_time * 1000.0, 3),
                     "postprocess_ms": round(postprocess_time * 1000.0, 3),
+                    "postprocess_filter_ms": round(postprocess_filter_time * 1000.0, 3),
+                    "postprocess_nms_ms": round(postprocess_nms_time * 1000.0, 3),
+                    "postprocess_threshold_ms": round(postprocess_threshold_time * 1000.0, 3),
                     "label_decode_ms": round(label_decode_time * 1000.0, 3),
                     "render_ms": round(render_time * 1000.0, 3),
                     "loop_ms": round(loop_time * 1000.0, 3),
@@ -351,6 +373,9 @@ def main():
             "preprocess": summarize_series(preprocess_times),
             "inference": summarize_series(inference_times),
             "postprocess": summarize_series(postprocess_times),
+            "postprocess_filter": summarize_series(postprocess_filter_times),
+            "postprocess_nms": summarize_series(postprocess_nms_times),
+            "postprocess_threshold": summarize_series(postprocess_threshold_times),
             "label_decode": summarize_series(label_decode_times),
             "render": summarize_series(render_times),
             "loop": summarize_series(loop_times),
@@ -365,6 +390,9 @@ def main():
             "preprocess_ms",
             "inference_ms",
             "postprocess_ms",
+            "postprocess_filter_ms",
+            "postprocess_nms_ms",
+            "postprocess_threshold_ms",
             "label_decode_ms",
             "render_ms",
             "loop_ms",
@@ -391,6 +419,9 @@ def main():
         f"Inference mean ms: {metrics['timings']['inference']['mean_ms']}",
         f"Inference p95 ms: {metrics['timings']['inference']['p95_ms']}",
         f"Postprocess mean ms: {metrics['timings']['postprocess']['mean_ms']}",
+        f"Postprocess filter mean ms: {metrics['timings']['postprocess_filter']['mean_ms']}",
+        f"Postprocess NMS mean ms: {metrics['timings']['postprocess_nms']['mean_ms']}",
+        f"Postprocess threshold mean ms: {metrics['timings']['postprocess_threshold']['mean_ms']}",
         f"Label decode mean ms: {metrics['timings']['label_decode']['mean_ms']}",
         f"Render mean ms: {metrics['timings']['render']['mean_ms']}",
         f"Loop mean ms: {metrics['timings']['loop']['mean_ms']}",
