@@ -19,6 +19,7 @@ from tools.baseline_utils import (
     load_actions,
     load_json,
     make_run_dir,
+    maybe_cuda_synchronize,
     resolve_color,
     summarize_series,
     to_builtin,
@@ -101,6 +102,7 @@ def main():
     max_frames = args.max_frames or config.get("max_frames")
     max_seconds = args.max_seconds or config.get("max_seconds")
     top_k_labels = args.top_k_labels if args.top_k_labels is not None else config.get("top_k_labels")
+    sync_cuda_timing = bool(config.get("sync_cuda_timing", True))
 
     run_name = config.get("run_name", "live_fp32_baseline")
     run_dir = make_run_dir(output_root, run_name)
@@ -155,6 +157,7 @@ def main():
             "max_frames": max_frames,
             "max_seconds": max_seconds,
             "top_k_labels": top_k_labels,
+            "sync_cuda_timing": sync_cuda_timing,
         },
     )
 
@@ -253,12 +256,15 @@ def main():
                 clip_tensor = torch.from_numpy(np.array(buffer)[sample_indices]).float() / 255.0
                 clip_tensor = normalizer(clip_tensor).unsqueeze(0).to(device)
 
+                maybe_cuda_synchronize(device, sync_cuda_timing)
                 inference_start = time.perf_counter()
                 with torch.no_grad():
                     outputs = model.encode_vision(clip_tensor)
                     outputs["pred_logits"] = F.normalize(outputs["pred_logits"], dim=-1) @ text_embeds.T
+                maybe_cuda_synchronize(device, sync_cuda_timing)
                 inference_time = time.perf_counter() - inference_start
 
+                maybe_cuda_synchronize(device, sync_cuda_timing)
                 postprocess_start = time.perf_counter()
                 result, postprocess_breakdown = postprocess(
                     outputs,
@@ -272,16 +278,20 @@ def main():
                 label_ids = result["labels"]
                 raw_scores = result["scores"]
                 detections = len(boxes)
+                maybe_cuda_synchronize(device, sync_cuda_timing)
                 postprocess_time = time.perf_counter() - postprocess_start
                 postprocess_filter_time = postprocess_breakdown["human_filter_s"]
                 postprocess_nms_time = postprocess_breakdown["nms_s"]
                 postprocess_threshold_time = postprocess_breakdown["threshold_s"]
 
+                maybe_cuda_synchronize(device, sync_cuda_timing)
                 label_decode_start = time.perf_counter()
                 labels, scores = decode_text_labels(label_ids, raw_scores, captions, top_k_labels)
+                maybe_cuda_synchronize(device, sync_cuda_timing)
                 label_decode_time = time.perf_counter() - label_decode_start
 
                 if writer is not None or show_preview:
+                    maybe_cuda_synchronize(device, sync_cuda_timing)
                     render_start = time.perf_counter()
                     rendered_frame = draw_predictions(
                         plotbuffer[mididx].transpose(1, 2, 0).astype(np.uint8),
@@ -299,6 +309,7 @@ def main():
                         cv2.imshow("SiA Live Baseline", rendered_frame)
                         if cv2.waitKey(1) & 0xFF == ord("q"):
                             break
+                    maybe_cuda_synchronize(device, sync_cuda_timing)
                     render_time = time.perf_counter() - render_start
 
                 frames_written += 1
@@ -360,6 +371,7 @@ def main():
         "max_frames": max_frames,
         "max_seconds": max_seconds,
         "top_k_labels": top_k_labels,
+        "sync_cuda_timing": sync_cuda_timing,
         "render_enabled": bool(writer is not None or show_preview),
         "monitor_source": system_monitor.source,
         "frames_read": frame_count,
@@ -409,6 +421,7 @@ def main():
         f"Device: {device}",
         f"Actions: {len(captions)}",
         f"Top-k labels per box: {top_k_labels if top_k_labels is not None else 'all'}",
+        f"CUDA timing synchronization: {sync_cuda_timing}",
         f"Render enabled: {bool(writer is not None or show_preview)}",
         f"Monitor source: {system_monitor.source}",
         f"Frames read: {frame_count}",

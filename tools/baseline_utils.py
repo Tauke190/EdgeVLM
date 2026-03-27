@@ -4,6 +4,8 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+import torch
+
 
 COLORS = {
     "red": (0, 0, 255),
@@ -106,6 +108,17 @@ def infer_git_commit():
 def write_run_summary(path, summary_lines):
     with open(path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(summary_lines) + "\n")
+
+
+def maybe_cuda_synchronize(device, enabled=True):
+    if not enabled:
+        return
+    if isinstance(device, str):
+        should_sync = device.startswith("cuda")
+    else:
+        should_sync = getattr(device, "type", None) == "cuda"
+    if should_sync and torch.cuda.is_available():
+        torch.cuda.synchronize()
 
 
 def safe_pct_change(baseline, candidate):
