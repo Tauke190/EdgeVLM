@@ -1,4 +1,5 @@
 import argparse
+from contextlib import nullcontext
 import time
 from pathlib import Path
 import sys
@@ -37,6 +38,11 @@ def parse_args():
     parser.add_argument("--weights", help="Optional override for the model weights path.")
     parser.add_argument("--output-root", help="Optional override for the results root directory.")
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from the source video.")
+    parser.add_argument(
+        "--precision",
+        choices=["fp32", "fp16"],
+        help="Optional precision override for model inference.",
+    )
     parser.add_argument(
         "--actions",
         type=lambda value: value.split(","),
@@ -96,6 +102,8 @@ def main():
     output_root = args.output_root or config["output_root"]
     captions = load_actions(config["actions_json"], actions_override=args.actions)
     device = config.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
+    precision = args.precision or config.get("precision", "fp32")
+    autocast_enabled = bool(config.get("autocast", precision == "fp16"))
     max_frames = args.max_frames or config.get("max_frames")
     top_k_labels = args.top_k_labels if args.top_k_labels is not None else config.get("top_k_labels")
     sync_cuda_timing = bool(config.get("sync_cuda_timing", True))
@@ -117,6 +125,8 @@ def main():
             "output_root": str(output_root),
             "resolved_device": device,
             "resolved_actions": captions,
+            "precision": precision,
+            "autocast": autocast_enabled,
             "top_k_labels": top_k_labels,
             "sync_cuda_timing": sync_cuda_timing,
             "render_enabled": render_enabled,
@@ -162,6 +172,11 @@ def main():
         strict=False,
     )
     model.to(device)
+    use_fp16 = precision == "fp16" and str(device).startswith("cuda")
+    if precision == "fp16" and not use_fp16:
+        raise RuntimeError("FP16 precision is only supported on CUDA in this benchmark runner.")
+    if use_fp16 and not autocast_enabled:
+        model.half()
     model.eval()
 
     normalizer = v2.Normalize(
@@ -170,7 +185,14 @@ def main():
     )
     postprocess = PostProcessViz()
 
-    text_embeds = model.encode_text(captions)
+    text_autocast_context = (
+        torch.autocast(device_type="cuda", dtype=torch.float16)
+        if use_fp16 and autocast_enabled
+        else nullcontext()
+    )
+    with torch.no_grad():
+        with text_autocast_context:
+            text_embeds = model.encode_text(captions)
     text_embeds = F.normalize(text_embeds, dim=-1)
 
     buffer = []
@@ -237,12 +259,25 @@ def main():
 
                 clip_tensor = torch.from_numpy(np.array(buffer)[sample_indices]).float() / 255.0
                 clip_tensor = normalizer(clip_tensor).unsqueeze(0).to(device)
+                if use_fp16 and not autocast_enabled:
+                    clip_tensor = clip_tensor.half()
 
                 maybe_cuda_synchronize(device, sync_cuda_timing)
                 inference_start = time.perf_counter()
                 with torch.no_grad():
-                    outputs = model.encode_vision(clip_tensor)
-                    outputs["pred_logits"] = F.normalize(outputs["pred_logits"], dim=-1) @ text_embeds.T
+                    inference_autocast_context = (
+                        torch.autocast(device_type="cuda", dtype=torch.float16)
+                        if use_fp16 and autocast_enabled
+                        else nullcontext()
+                    )
+                    with inference_autocast_context:
+                        outputs = model.encode_vision(clip_tensor)
+                        similarity_text_embeds = text_embeds.to(dtype=outputs["pred_logits"].dtype)
+                        outputs["pred_logits"] = F.normalize(outputs["pred_logits"], dim=-1) @ similarity_text_embeds.T
+                    outputs = {
+                        key: value.float() if torch.is_tensor(value) and value.is_floating_point() else value
+                        for key, value in outputs.items()
+                    }
                 maybe_cuda_synchronize(device, sync_cuda_timing)
                 inference_time = time.perf_counter() - inference_start
 
@@ -331,6 +366,8 @@ def main():
         "weights_path": weights_path,
         "git_commit": infer_git_commit(),
         "device": device,
+        "precision": precision,
+        "autocast": autocast_enabled,
         "num_actions": len(captions),
         "num_frames_per_clip": num_frames,
         "buffer_max_len": buffer_max_len,
@@ -386,6 +423,8 @@ def main():
         f"Video: {video_path}",
         f"Weights: {weights_path}",
         f"Device: {device}",
+        f"Precision: {precision}",
+        f"Autocast enabled: {autocast_enabled}",
         f"Actions: {len(captions)}",
         f"Top-k labels per box: {top_k_labels if top_k_labels is not None else 'all'}",
         f"CUDA timing synchronization: {sync_cuda_timing}",
