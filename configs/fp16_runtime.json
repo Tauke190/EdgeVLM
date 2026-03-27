@@ -1,15 +1,15 @@
 {
-  "run_name": "offline_fp32_baseline",
+  "run_name": "offline_fp16_benchmark",
   "video_path": "video.mp4",
   "weights_path": "weights/avak_b16_11.pt",
   "actions_json": "gpt/GPT_AVA.json",
-  "output_root": "results/baseline",
-  "output_video_name": "pred_video.mp4",
+  "output_root": "results/fp16",
+  "output_video_name": "pred_video_fp16.mp4",
   "output_fps": 25,
   "video_codec": "mp4v",
   "device": "cuda",
-  "precision": "fp32",
-  "autocast": false,
+  "precision": "fp16",
+  "autocast": true,
   "model_size": "b",
   "pretrain": null,
   "det_token_num": 20,
@@ -36,5 +36,6 @@
   "line_thickness": 1,
   "top_k_labels": 3,
   "render_enabled": true,
+  "sync_cuda_timing": true,
   "system_metrics_interval_s": 1.0
 }
