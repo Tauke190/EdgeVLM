@@ -19,6 +19,7 @@ from tools.baseline_utils import (
     load_actions,
     load_json,
     make_run_dir,
+    maybe_cuda_synchronize,
     resolve_color,
     summarize_series,
     to_builtin,
@@ -97,6 +98,7 @@ def main():
     device = config.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
     max_frames = args.max_frames or config.get("max_frames")
     top_k_labels = args.top_k_labels if args.top_k_labels is not None else config.get("top_k_labels")
+    sync_cuda_timing = bool(config.get("sync_cuda_timing", True))
     render_enabled = not args.no_render if args.no_render else False
     if "render_enabled" in config and not args.no_render:
         render_enabled = bool(config.get("render_enabled"))
@@ -116,6 +118,7 @@ def main():
             "resolved_device": device,
             "resolved_actions": captions,
             "top_k_labels": top_k_labels,
+            "sync_cuda_timing": sync_cuda_timing,
             "render_enabled": render_enabled,
         },
     )
@@ -235,12 +238,15 @@ def main():
                 clip_tensor = torch.from_numpy(np.array(buffer)[sample_indices]).float() / 255.0
                 clip_tensor = normalizer(clip_tensor).unsqueeze(0).to(device)
 
+                maybe_cuda_synchronize(device, sync_cuda_timing)
                 inference_start = time.perf_counter()
                 with torch.no_grad():
                     outputs = model.encode_vision(clip_tensor)
                     outputs["pred_logits"] = F.normalize(outputs["pred_logits"], dim=-1) @ text_embeds.T
+                maybe_cuda_synchronize(device, sync_cuda_timing)
                 inference_time = time.perf_counter() - inference_start
 
+                maybe_cuda_synchronize(device, sync_cuda_timing)
                 postprocess_start = time.perf_counter()
                 result, postprocess_breakdown = postprocess(
                     outputs,
@@ -252,16 +258,20 @@ def main():
                 result = result[0]
                 boxes = result["boxes"]
                 detections = len(boxes)
+                maybe_cuda_synchronize(device, sync_cuda_timing)
                 postprocess_time = time.perf_counter() - postprocess_start
                 postprocess_filter_time = postprocess_breakdown["human_filter_s"]
                 postprocess_nms_time = postprocess_breakdown["nms_s"]
                 postprocess_threshold_time = postprocess_breakdown["threshold_s"]
 
+                maybe_cuda_synchronize(device, sync_cuda_timing)
                 label_decode_start = time.perf_counter()
                 labels, scores = decode_text_labels(result["labels"], result["scores"], captions, top_k_labels)
+                maybe_cuda_synchronize(device, sync_cuda_timing)
                 label_decode_time = time.perf_counter() - label_decode_start
 
                 if render_enabled:
+                    maybe_cuda_synchronize(device, sync_cuda_timing)
                     render_start = time.perf_counter()
                     rendered_frame = draw_predictions(
                         plotbuffer[mididx].transpose(1, 2, 0).astype(np.uint8),
@@ -273,6 +283,7 @@ def main():
                         thickness,
                     )
                     writer.write(rendered_frame)
+                    maybe_cuda_synchronize(device, sync_cuda_timing)
                     render_time = time.perf_counter() - render_start
 
                 frames_written += 1
@@ -327,6 +338,7 @@ def main():
         "threshold": threshold,
         "max_frames": max_frames,
         "top_k_labels": top_k_labels,
+        "sync_cuda_timing": sync_cuda_timing,
         "render_enabled": render_enabled,
         "monitor_source": system_monitor.source,
         "frames_read": frame_count,
@@ -376,6 +388,7 @@ def main():
         f"Device: {device}",
         f"Actions: {len(captions)}",
         f"Top-k labels per box: {top_k_labels if top_k_labels is not None else 'all'}",
+        f"CUDA timing synchronization: {sync_cuda_timing}",
         f"Render enabled: {render_enabled}",
         f"Monitor source: {system_monitor.source}",
         f"Frames read: {frame_count}",
