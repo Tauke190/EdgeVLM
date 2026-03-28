@@ -97,6 +97,12 @@ def main():
     }
     for stage in ["capture", "preprocess", "inference", "postprocess", "render", "loop"]:
         comparison["stages"][stage] = build_stage_comparison(baseline_metrics, candidate_metrics, stage)
+    if "active_loop" in baseline_metrics.get("timings", {}) or "active_loop" in candidate_metrics.get("timings", {}):
+        comparison["stages"]["active_loop"] = build_stage_comparison(
+            baseline_metrics,
+            candidate_metrics,
+            "active_loop",
+        )
     if "label_decode" in baseline_metrics.get("timings", {}) or "label_decode" in candidate_metrics.get("timings", {}):
         comparison["stages"]["label_decode"] = build_stage_comparison(
             baseline_metrics,
