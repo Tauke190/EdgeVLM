@@ -1,5 +1,6 @@
 import argparse
 from contextlib import nullcontext
+import shlex
 import time
 from pathlib import Path
 import sys
@@ -95,6 +96,7 @@ def draw_predictions(frame, boxes, labels, scores, color, font_scale, thickness)
 
 def main():
     args = parse_args()
+    invoked_command = " ".join(shlex.quote(part) for part in [sys.executable, *sys.argv])
     config = load_json(args.config)
 
     video_path = args.video or config["video_path"]
@@ -204,6 +206,7 @@ def main():
     stage_rows = []
     inference_times = []
     loop_times = []
+    active_loop_times = []
     capture_times = []
     preprocess_times = []
     postprocess_times = []
@@ -337,10 +340,12 @@ def main():
                 postprocess_threshold_times.append(postprocess_threshold_time)
                 label_decode_times.append(label_decode_time)
                 render_times.append(render_time)
+                active_loop_times.append(loop_time)
 
             stage_rows.append(
                 {
                     "frame_index": frame_count,
+                    "active_iteration": int(inference_time > 0),
                     "capture_ms": round(capture_time * 1000.0, 3),
                     "preprocess_ms": round(preprocess_time * 1000.0, 3),
                     "inference_ms": round(inference_time * 1000.0, 3),
@@ -395,6 +400,7 @@ def main():
             "label_decode": summarize_series(label_decode_times),
             "render": summarize_series(render_times),
             "loop": summarize_series(loop_times),
+            "active_loop": summarize_series(active_loop_times),
         },
     }
 
@@ -402,6 +408,7 @@ def main():
         run_dir / "stage_timings.csv",
         [
             "frame_index",
+            "active_iteration",
             "capture_ms",
             "preprocess_ms",
             "inference_ms",
@@ -420,6 +427,7 @@ def main():
 
     summary_lines = [
         f"Run directory: {run_dir}",
+        f"Command: {invoked_command}",
         f"Video: {video_path}",
         f"Weights: {weights_path}",
         f"Device: {device}",
@@ -444,6 +452,8 @@ def main():
         f"Label decode mean ms: {metrics['timings']['label_decode']['mean_ms']}",
         f"Render mean ms: {metrics['timings']['render']['mean_ms']}",
         f"Loop mean ms: {metrics['timings']['loop']['mean_ms']}",
+        f"Active loop mean ms: {metrics['timings']['active_loop']['mean_ms']}",
+        f"Active loop p95 ms: {metrics['timings']['active_loop']['p95_ms']}",
         f"Output video: {output_video_path if writer is not None else 'disabled'}",
     ]
     write_run_summary(run_dir / "run_summary.txt", summary_lines)
