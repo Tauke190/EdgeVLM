@@ -93,6 +93,7 @@ weights/
 
 # Ignore JSON stats files
 *.json
+!configs/*.json
 
 # Ignore CSV files
 *.csv
@@ -121,3 +122,10 @@ sia/
 
 # Ignore demo result
 pred_video.mp4
+
+# Ignore generated benchmark artifacts, but keep repo docs/configs
+results/**
+!results/
+!results/README.md
+
+kyle-docs
