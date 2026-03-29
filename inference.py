@@ -20,9 +20,10 @@ parser.add_argument("-F", type=str, required=True, help="file path")
 parser.add_argument("-thresh", type=float, default=0.25, help="cosine threshold")
 parser.add_argument("-act", type=lambda s: s.split(","), help="Comma-separated list of actions")
 parser.add_argument("-color", type=str, default='green', help="color to plot predictions")
-parser.add_argument("-font", type=float, default=0.3, help="font size")
+parser.add_argument("-font", type=float, default=0.5, help="font size")
 parser.add_argument("-line", type=int, default=1, help="line thickness")
 args = parser.parse_args()
+
 
 COLORS = {
     "red": (0, 0, 255),
@@ -43,6 +44,8 @@ print(f"Loading video: {args.F}")
 cap = cv2.VideoCapture(args.F)
 frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+print(f"Total frames in video: {total_frames}")
 outsize = (frame_height, frame_width)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -70,6 +73,15 @@ print(f"Actions to detect: {len(captions)}")
 text_embeds = model.encode_text(captions)
 text_embeds = F.normalize(text_embeds, dim=-1)
 
+# Measure FLOPS for a single forward pass
+try:
+    from thop import profile
+    dummy_clip = torch.randn(1, 3, 9, 240, 320).to(device)
+    flops, params = profile(model.vision_encoder, inputs=(dummy_clip,), verbose=False)
+    print(f"FLOPs per forward pass: {flops / 1e9:.2f} GFLOPs")
+except ImportError:
+    print("thop not installed, skipping FLOPS measurement")
+
 imgsize = (240, 320)
 output_path = 'pred_' + args.F.split('.')[0] + '.mp4'
 writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), 25, (frame_width, frame_height))
@@ -79,10 +91,16 @@ mididx = buffer_max_len // 2
 buffer = []
 plotbuffer = []
 
+# Store last prediction for real-time display
+last_boxes = None
+last_labels = None
+last_scores = None
+
 postprocess = PostProcessViz()
 init = 0
 ret = True
 frame_count = 0
+forward_passes = 0
 
 print("Starting inference...")
 while ret:
@@ -101,6 +119,7 @@ while ret:
     buffer.append(color_image)
     
     if len(buffer) > buffer_max_len:
+        forward_passes += 1
         _ = buffer.pop(0)
         _ = plotbuffer.pop(0)
         clip_torch = torch.tensor(np.array(buffer)[0:buffer_max_len:buffer_max_len//9]) / 255
@@ -111,35 +130,96 @@ while ret:
             outputs['pred_logits'] = F.normalize(outputs['pred_logits'], dim=-1) @ text_embeds.T
             result = postprocess(outputs, outsize, human_conf=0.9, thresh=args.thresh)[0]
             result['text_labels'] = [[captions[e] for e in ele] for ele in result['labels']]
-            boxes = result['boxes']
-            labels = result['text_labels']
-            scores = result['scores']
+            last_boxes = result['boxes']
+            last_labels = result['text_labels']
+            last_scores = result['scores']
 
-        out_frame = plotbuffer[mididx].transpose(1, 2, 0).astype(np.uint8)
-        for j in range(len(boxes)):
-            box = boxes[j].cpu().detach().numpy()
-            label = labels[j]
-            score = scores[j]
-            start_point = (int(box[0]), int(box[1]))
-            end_point = (int(box[2]), int(box[3]))
-            out_frame = cv2.rectangle(out_frame, start_point, end_point, color, thickness)
-            offset = 0
-            for k in range(len(label)):
-                act = label[k]
-                sco = score[k]
+        # Display on latest frame for real-time feedback
+        # (predictions computed from 72-frame context centered ~36 frames ago)
+        out_frame = plotbuffer[-1].transpose(1, 2, 0).astype(np.uint8)
+        for j in range(len(last_boxes)):
+            box = last_boxes[j]
+            if torch.is_tensor(box):
+                box = box.cpu().detach().numpy()
+            else:
+                box = np.array(box)
+            
+            label = last_labels[j]
+            score = last_scores[j]
+            
+            # Convert to integers
+            x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+            start_point = (x1, y1)
+            end_point = (x2, y2)
+            
+            out_frame = cv2.rectangle(out_frame, start_point, end_point, color, int(thickness))
+            # Only show the action with highest probability
+            if len(label) > 0:
+                max_idx = torch.argmax(score).item()
+                act = label[max_idx]
+                sco = score[max_idx]
                 text = act + ' ' + str(round(sco.item(), 2))
-                out_frame = cv2.putText(out_frame, text, (int(box[0])-5, int(box[1])+offset), cv2.FONT_HERSHEY_SIMPLEX, font, color, thickness, cv2.LINE_AA)
-                offset += 20
-    
-    if init > buffer_max_len:
-        writer.write(out_frame)
+                out_frame = cv2.putText(out_frame, text, (int(box[0])-5, int(box[1])+20), cv2.FONT_HERSHEY_SIMPLEX, font, color, thickness, cv2.LINE_AA)
     else:
-        init += 1
+        # Before buffer fills, display latest frame without predictions
+        out_frame = plotbuffer[-1].transpose(1, 2, 0).astype(np.uint8)
+    
+    # Write to video (after buffer warm-up period)
+    if len(buffer) >= buffer_max_len:
+        writer.write(out_frame)
     
     end = time.time()
     if frame_count % 30 == 0:
         print(f"Processed {frame_count} frames")
 
+# Process remaining frames in buffer after video ends (drain buffer)
+# Pad with last frame so inference always runs, giving fresh predictions per frame
+while len(plotbuffer) > 0:
+    if buffer:
+        buffer.pop(0)
+    
+    if len(buffer) > 0:
+        # Pad buffer to full size using last frame so 9-frame sampling always works
+        buf_padded = list(buffer)
+        while len(buf_padded) < buffer_max_len:
+            buf_padded.append(buf_padded[-1])
+        
+        forward_passes += 1
+        clip_torch = torch.tensor(np.array(buf_padded)[0:buffer_max_len:buffer_max_len//9]) / 255
+        clip_torch = tfs(clip_torch)
+        with torch.no_grad():
+            outputs = model.encode_vision(clip_torch.unsqueeze(0).to(device))
+            outputs['pred_logits'] = F.normalize(outputs['pred_logits'], dim=-1) @ text_embeds.T
+            result = postprocess(outputs, outsize, human_conf=0.9, thresh=args.thresh)[0]
+            result['text_labels'] = [[captions[e] for e in ele] for ele in result['labels']]
+            last_boxes = result['boxes']
+            last_labels = result['text_labels']
+            last_scores = result['scores']
+    
+    plot_frame = plotbuffer.pop(0)
+    out_frame = plot_frame.transpose(1, 2, 0).astype(np.uint8)
+    if last_boxes is not None:
+        for j in range(len(last_boxes)):
+            box = last_boxes[j]
+            if torch.is_tensor(box):
+                box = box.cpu().detach().numpy()
+            else:
+                box = np.array(box)
+            label = last_labels[j]
+            score = last_scores[j]
+            x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+            out_frame = cv2.rectangle(out_frame, (x1, y1), (x2, y2), color, int(thickness))
+            if len(label) > 0:
+                max_idx = torch.argmax(score).item()
+                text = label[max_idx] + ' ' + str(round(score[max_idx].item(), 2))
+                out_frame = cv2.putText(out_frame, text, (x1-5, y1+20), cv2.FONT_HERSHEY_SIMPLEX, font, color, int(thickness), cv2.LINE_AA)
+    writer.write(out_frame)
+
 cap.release()
 writer.release()
-print(f"Inference complete! Output saved to: {output_path}")
+
+print(f"\n✓ Inference complete!")
+print(f"  Output: {output_path}")
+print(f"\nStats:")
+print(f"  Total frames: {frame_count}")
+print(f"  Forward passes: {forward_passes}")

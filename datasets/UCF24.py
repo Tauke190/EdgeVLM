@@ -9,6 +9,7 @@ from decord import VideoReader
 import json
 import regex as re
 import random
+from PIL import Image
 
 from util.box_ops import box_xyxy_to_cxcywh
 
@@ -120,7 +121,6 @@ class UCF24(Dataset):
     def __getitem__(self, idx):
         v, frame = self.indices[idx]
         v = os.path.join(self.video_dir, v)
-        vr = VideoReader(v + '.avi')
 
         label = ' '.join(re.findall('[A-Z][a-z]*', v.split('/')[-2]))
         
@@ -129,8 +129,32 @@ class UCF24(Dataset):
         end = start + self.T
         clip_idx = list(range(start, end, self.rate))
 
-        # load clip
-        clip = vr.get_batch(clip_idx).permute(0, 3, 1, 2) / 255 # TCHW, scaled between 0 and 255
+        # load clip from frames directory
+        clip_frames = []
+        # List and sort frame files in the directory
+        if os.path.exists(v):
+            frame_files = sorted([f for f in os.listdir(v) if f.endswith(('.jpg', '.jpeg', '.png'))])
+            for frame_num in clip_idx:
+                if frame_num - 1 < len(frame_files):
+                    img_path = os.path.join(v, frame_files[frame_num - 1])
+                    img = Image.open(img_path).convert('RGB')
+                    img = torch.tensor(np.array(img), dtype=torch.float32).permute(2, 0, 1) / 255.0
+                    clip_frames.append(img)
+                else:
+                    # If frame doesn't exist, replicate the last available frame
+                    if clip_frames:
+                        clip_frames.append(clip_frames[-1].clone())
+            
+            if not clip_frames:
+                raise RuntimeError(f"No frames found in {v}")
+            clip = torch.stack(clip_frames)  # TCHW
+        else:
+            # Fallback to trying .avi file if directory doesn't exist
+            try:
+                vr = VideoReader(v + '.avi')
+                clip = vr.get_batch(clip_idx).permute(0, 3, 1, 2) / 255
+            except:
+                raise RuntimeError(f"Error reading frames from {v} or {v}.avi")
 
         # load anno
         mididx = clip_idx[self.frames // 2] + 1

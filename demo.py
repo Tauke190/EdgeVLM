@@ -10,7 +10,6 @@ from torchvision.ops import batched_nms
 from sia import get_sia, PostProcessViz
 from datasets import avatextaug
 
-
 parser = argparse.ArgumentParser(description="Offline Demo with SIA")
 parser.add_argument("-thresh", type=float, default=0.25,
                     help="cosine threshold")
@@ -42,6 +41,8 @@ thickness = args.line
 cap = cv2.VideoCapture(args.F)
 frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+print(f"Total frames in video: {total_frames}")
 
 outsize=(frame_height, frame_width)
 out_frame = np.full((outsize[0],outsize[1],3), 0.)
@@ -85,6 +86,15 @@ temp_num_classes = len(captions)
 text_embeds = model.encode_text(captions)
 text_embeds = F.normalize(text_embeds, dim=-1)
 
+# Measure FLOPS for a single forward pass
+try:
+    from thop import profile
+    dummy_clip = torch.randn(1, 3, 9, 240, 320).to(device)  # [B, C, T, H, W]
+    flops, params = profile(model, inputs=(dummy_clip,), verbose=False)
+    print(f"FLOPs per forward pass: {flops / 1e9:.2f} GFLOPs")
+except ImportError:
+    print("thop not installed, skipping FLOPS measurement")
+
 imgsize=(240,320) #(120,160) #(180,240) #(240,320)
 
 writer = cv2.VideoWriter('pred_' + args.F.split('.')[0] +'.mp4',
@@ -99,6 +109,7 @@ plotbuffer = []
 postprocess = PostProcessViz()
 init = 0
 ret = True
+forward_passes = 0
 while ret:
     start = time.time()
     ret, frame = cap.read()
@@ -123,6 +134,7 @@ while ret:
     
     # start inference if buffer is full
     if len(buffer) > buffer_max_len:
+        forward_passes += 1
         _ = buffer.pop(0)
         _ = plotbuffer.pop(0)
         clip_torch = torch.tensor(np.array(buffer)[0:buffer_max_len:buffer_max_len//9]) / 255
@@ -158,5 +170,8 @@ while ret:
     print('Inference duration for 9x8 frames:', end - start)
                 
     # done inference if buffer is full
-writer.release() 
+writer.release()
+print(f"\nInference complete! Output saved to: pred_{args.F.split('.')[0]}.mp4")
+print(f"Total frames processed: {total_frames}")
+print(f"Total forward passes: {forward_passes}")
 #cv2.destroyAllWindows()
