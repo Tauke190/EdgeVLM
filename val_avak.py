@@ -98,11 +98,11 @@ print('Using device:', device)
 # Load Model #
 ##############
 if args.SIZE == 'b16':
-    pretrain = "weights/viclip/ViCLIP-B_InternVid-FLT-10M.pth"
+    pretrain = None
 
     model = get_sia(size='b', pretrain=pretrain, det_token_num=args.DET, text_lora=args.TXTLORA, num_frames=args.FRAMES)['sia']
 else:
-    pretrain = "weights/viclip/ViCLIP-L_InternVid-FLT-10M.pth"
+    pretrain = None
 
     model = get_sia(size='l', pretrain=pretrain, det_token_num=args.DET, text_lora=args.TXTLORA, num_frames=args.FRAMES)['sia']
 
@@ -148,22 +148,34 @@ elif args.VAL == 'K700':
     test_ava = AVA(args.AVA, args.ANNOTRAINAVA, args.ANNOVALAVA, args.ANNOLISTAVA2019, transforms=tfs, frames=args.FRAMES, rate=args.RATEAVA, split ='val')
     test_kinetics = K700(args.KINETICS, args.ANNOTRAINKINETICS, args.ANNOVALKINETICS, clsfile=args.ANNOLISTAVA2019, csvfile=args.ANNOLISTKINETICS, transforms=tfs, frames=args.FRAMES, rate=args.RATEKINETICS, split='val')
     test_dataset = test_kinetics
+elif args.VAL == 'UCF24':
+    test_dataset = UCF24(args.UCF24, args.ANNOUCF24, transforms=tfs, frames=video_input_num_frames, rate=args.RATEUCF24, split='test')
+elif args.VAL == 'HMDB21':
+    test_dataset = HMDB21(args.HMDB21, args.ANNOHMDB21, transforms=tfs, frames=video_input_num_frames, split='test')
     
 test_loader = DataLoader(test_dataset, batch_size=batch_size, collate_fn=collate_fn, shuffle=True, num_workers = num_workers)
 
-test_ucf = UCF24(args.UCF24, args.ANNOUCF24, transforms = tfs, frames = video_input_num_frames, rate = args.RATEUCF24, split = 'test')
-test_ucf_loader = DataLoader(test_ucf, batch_size=batch_size, collate_fn=collate_fn, shuffle=True, num_workers = num_workers)
+# Only initialize datasets that will actually be evaluated
+test_ucf = None
+test_ucf_loader = None
+if args.VAL in ('UCF24', 'AVAK', 'K700'):
+    test_ucf = UCF24(args.UCF24, args.ANNOUCF24, transforms = tfs, frames = video_input_num_frames, rate = args.RATEUCF24, split = 'test')
+    test_ucf_loader = DataLoader(test_ucf, batch_size=batch_size, collate_fn=collate_fn, shuffle=True, num_workers = num_workers)
 
-test_hmdb = HMDB21(args.HMDB21, args.ANNOHMDB21, transforms = tfs, frames = video_input_num_frames, split = 'test')
-test_hmdb_loader = DataLoader(test_hmdb, batch_size=1, collate_fn=collate_fn, shuffle=True, num_workers = 1)
+test_hmdb = None
+test_hmdb_loader = None
+if args.VAL in ('HMDB21', 'AVAK', 'K700'):
+    test_hmdb = HMDB21(args.HMDB21, args.ANNOHMDB21, transforms = tfs, frames = video_input_num_frames, split = 'test')
+    test_hmdb_loader = DataLoader(test_hmdb, batch_size=1, collate_fn=collate_fn, shuffle=True, num_workers = 1)
 
 def flatten(xss):
     return [x for xs in xss for x in xs]
     
 # remove 20 long tail classes from AVA
-ava60classes = test_ava.classes
-avatextaug = dict(filter(lambda item: item[0] in ava60classes, avatextaug.items()))
-print('AVA 60 classes:', list(avatextaug.keys()))
+if args.VAL in ('AVA', 'AVAK'):
+    ava60classes = test_ava.classes
+    avatextaug = dict(filter(lambda item: item[0] in ava60classes, avatextaug.items()))
+    print('AVA 60 classes:', list(avatextaug.keys()))
 
 ava_captions = [k for k, v in avatextaug.items()]
 ucf_captions = [k for k, v in ucf24textaug.items()]
@@ -200,11 +212,29 @@ if args.TXTAUG:
         
 postprocess = PostProcess()
 
-weights = os.listdir(args.PRETRAINED)
-prefix = '_'.join(weights[0].split('_')[:-1])
-weights = [int(ele.split('_')[-1].split('.')[0]) for ele in weights]
-weights.sort()
-weights = [prefix + '_' +str(ele) + '.pt' for ele in weights]
+# Load all .pt weight files and sort by number
+all_files = [f for f in os.listdir(args.PRETRAINED) if f.endswith('.pt')]
+weights_dict = {}
+
+for f in all_files:
+    try:
+        # Try to extract the number from the filename (format: prefix_number.pt)
+        num_str = f.split('_')[-1].split('.')[0]
+        num = int(num_str)
+        prefix = '_'.join(f.split('_')[:-1])
+        weights_dict[num] = (prefix, f)
+    except (ValueError, IndexError):
+        # Skip files that don't match the expected pattern
+        print(f"Skipping {f} (doesn't match expected naming pattern)")
+        continue
+
+if not weights_dict:
+    raise RuntimeError(f"No valid weight files found in {args.PRETRAINED}")
+
+# Sort by number and reconstruct filename list
+sorted_nums = sorted(weights_dict.keys())
+weights = [weights_dict[num][1] for num in sorted_nums]
+
 for weight in weights:
     print('evaluating:', weight)
     model.load_state_dict(torch.load(os.path.join(args.PRETRAINED, weight), map_location=device))
@@ -228,7 +258,12 @@ for weight in weights:
             temp_num_classes = len(captions)
             for t in targets:
                 t['boxes'] = t['boxes'].to(device)
-                intlabels = [list(map(lambda x:captionstoidx[x], ele)) for ele in t['text_labels']]
+                # Filter labels to only include those in captionstoidx
+                intlabels = []
+                for ele in t['text_labels']:
+                    valid_labels = [captionstoidx[x] for x in ele if x in captionstoidx]
+                    if valid_labels:  # Only add if there are valid labels
+                        intlabels.append(valid_labels)
                 t['labels'] = intlabels
             
             if args.TXTAUG:
@@ -276,126 +311,140 @@ for weight in weights:
     ############
     # Test UCF #
     ############
-    metric = MeanAveragePrecision(iou_type='bbox',
-                                  box_format='xyxy',
-                                  iou_thresholds=[0.5, ],
-                                  backend='faster_coco_eval')
-    for samples, targets in tqdm(test_ucf_loader):
-        with torch.no_grad():
-            samples = samples.to(device)
+    ucf_fmap2, ucf_fmap5 = 0, 0
+    if test_ucf_loader is not None:
+        metric = MeanAveragePrecision(iou_type='bbox',
+                                      box_format='xyxy',
+                                      iou_thresholds=[0.5, ],
+                                      backend='faster_coco_eval')
+        for samples, targets in tqdm(test_ucf_loader):
+            with torch.no_grad():
+                samples = samples.to(device)
 
-            #extract captions and temp label mapping
-            captions = ucf_captions
-            captionstoidx = {v: k for k, v in enumerate(captions)}
-            temp_num_classes = len(captions)
-            for t in targets:
-                t['boxes'] = t['boxes'].to(device)
-                intlabels = [list(map(lambda x:captionstoidx[x], ele)) for ele in t['text_labels']]
-                t['labels'] = intlabels
-            
-            if args.TXTAUG:
-                outputs = model(samples.to(device), ucf_captions_aug)
-                results = postprocess(outputs, imgsize=test_ucf.imgsize, human_conf=0.0, Aaug=Aucf)
-            else:
-                outputs = model(samples.to(device), ucf_captions)
-                results = postprocess(outputs, imgsize=test_ucf.imgsize, human_conf=0.0)
+                #extract captions and temp label mapping
+                captions = ucf_captions
+                captionstoidx = {v: k for k, v in enumerate(captions)}
+                temp_num_classes = len(captions)
+                for t in targets:
+                    t['boxes'] = t['boxes'].to(device)
+                    # Filter labels to only include those in captionstoidx
+                    intlabels = []
+                    for ele in t['text_labels']:
+                        valid_labels = [captionstoidx[x] for x in ele if x in captionstoidx]
+                        if valid_labels:  # Only add if there are valid labels
+                            intlabels.append(valid_labels)
+                    t['labels'] = intlabels
+                
+                if args.TXTAUG:
+                    outputs = model(samples.to(device), ucf_captions_aug)
+                    results = postprocess(outputs, imgsize=test_ucf.imgsize, human_conf=0.0, Aaug=Aucf)
+                else:
+                    outputs = model(samples.to(device), ucf_captions)
+                    results = postprocess(outputs, imgsize=test_ucf.imgsize, human_conf=0.0)
 
-        preds, tgts = [], []
-        for i in range(samples.shape[0]):
-            result = results[i]
-            scores, cls, boxes = result['scores'], result['labels'], result['boxes']
+            preds, tgts = [], []
+            for i in range(samples.shape[0]):
+                result = results[i]
+                scores, cls, boxes = result['scores'], result['labels'], result['boxes']
+                
+                if boxes.shape[0] == 0:
+                    result_dict = None
+                else:
+                    result_dict = {'boxes': boxes, 'labels': cls, 'scores': scores}
+                
+                gt = targets[i]
+                rawboxes = gt['boxes']
+                rawboxes = box_cxcywh_to_xyxy(rawboxes)
+                rawcls = gt['labels']
+                boxes = []
+                cls = []
+                for j in range(len(rawcls)):
+                    tmpcls = rawcls[j]
+                    cls.extend(tmpcls)
+                    for _ in range(len(tmpcls)):
+                        boxes.append(rawboxes[j])
+                boxes = torch.stack(boxes)
+                boxes[:,0::2] = boxes[:,0::2] * test_ucf.imgsize[1]
+                boxes[:,1::2] = boxes[:,1::2] * test_ucf.imgsize[0]
+                cls = torch.tensor(cls).to(boxes.device)
+                ground_truth = {'boxes': boxes, 'labels': cls}
+                
+                if result_dict != None:
+                    preds.append(result_dict)
+                    tgts.append(ground_truth)
+            metric.update(preds, tgts)
             
-            if boxes.shape[0] == 0:
-                result_dict = None
-            else:
-                result_dict = {'boxes': boxes, 'labels': cls, 'scores': scores}
-            
-            gt = targets[i]
-            rawboxes = gt['boxes']
-            rawboxes = box_cxcywh_to_xyxy(rawboxes)
-            rawcls = gt['labels']
-            boxes = []
-            cls = []
-            for j in range(len(rawcls)):
-                tmpcls = rawcls[j]
-                cls.extend(tmpcls)
-                for _ in range(len(tmpcls)):
-                    boxes.append(rawboxes[j])
-            boxes = torch.stack(boxes)
-            boxes[:,0::2] = boxes[:,0::2] * test_ucf.imgsize[1]
-            boxes[:,1::2] = boxes[:,1::2] * test_ucf.imgsize[0]
-            cls = torch.tensor(cls).to(boxes.device)
-            ground_truth = {'boxes': boxes, 'labels': cls}
-            
-            if result_dict != None:
-                preds.append(result_dict)
-                tgts.append(ground_truth)
-        metric.update(preds, tgts)
-        
-    pprint(metric.compute())
-    ucf_fmap2, ucf_fmap5 = 0, metric.compute()['map_50'].cpu().detach().item()
+        pprint(metric.compute())
+        ucf_fmap2, ucf_fmap5 = 0, metric.compute()['map_50'].cpu().detach().item()
 
     ##############
     # Test JHMDB #
     ##############
-    metric = MeanAveragePrecision(iou_type='bbox',
-                                  box_format='xyxy',
-                                  iou_thresholds=[0.5, ],
-                                  backend='faster_coco_eval')
-    for samples, targets in tqdm(test_hmdb_loader):
-        with torch.no_grad():
-            samples = samples.to(device)
+    hmdb_fmap2, hmdb_fmap5 = 0, 0
+    if test_hmdb_loader is not None:
+        metric = MeanAveragePrecision(iou_type='bbox',
+                                      box_format='xyxy',
+                                      iou_thresholds=[0.5, ],
+                                      backend='faster_coco_eval')
+        for samples, targets in tqdm(test_hmdb_loader):
+            with torch.no_grad():
+                samples = samples.to(device)
 
-            #extract captions and temp label mapping
-            captions = hmdb_captions
-            captionstoidx = {v: k for k, v in enumerate(captions)}
-            temp_num_classes = len(captions)
-            for t in targets:
-                t['boxes'] = t['boxes'].to(device)
-                intlabels = [list(map(lambda x:captionstoidx[x], ele)) for ele in t['text_labels']]
-                t['labels'] = intlabels
-            
-            if args.TXTAUG:
-                outputs = model(samples.to(device), hmdb_captions_aug)
-                results = postprocess(outputs, imgsize=test_hmdb.imgsize, human_conf=0.0, Aaug=Ajhmdb)
-            else:
-                outputs = model(samples.to(device), hmdb_captions)
-                results = postprocess(outputs, imgsize=test_hmdb.imgsize, human_conf=0.0)
+                #extract captions and temp label mapping
+                captions = hmdb_captions
+                captionstoidx = {v: k for k, v in enumerate(captions)}
+                temp_num_classes = len(captions)
+                for t in targets:
+                    t['boxes'] = t['boxes'].to(device)
+                    # Filter labels to only include those in captionstoidx
+                    intlabels = []
+                    for ele in t['text_labels']:
+                        valid_labels = [captionstoidx[x] for x in ele if x in captionstoidx]
+                        if valid_labels:  # Only add if there are valid labels
+                            intlabels.append(valid_labels)
+                    t['labels'] = intlabels
+                
+                if args.TXTAUG:
+                    outputs = model(samples.to(device), hmdb_captions_aug)
+                    results = postprocess(outputs, imgsize=test_hmdb.imgsize, human_conf=0.0, Aaug=Ajhmdb)
+                else:
+                    outputs = model(samples.to(device), hmdb_captions)
+                    results = postprocess(outputs, imgsize=test_hmdb.imgsize, human_conf=0.0)
 
-        preds, tgts = [], []
-        for i in range(samples.shape[0]):
-            result = results[i]
-            scores, cls, boxes = result['scores'], result['labels'], result['boxes']
+            preds, tgts = [], []
+            for i in range(samples.shape[0]):
+                result = results[i]
+                scores, cls, boxes = result['scores'], result['labels'], result['boxes']
+                
+                if boxes.shape[0] == 0:
+                    result_dict = None
+                else:
+                    result_dict = {'boxes': boxes, 'labels': cls, 'scores': scores}
+                
+                gt = targets[i]
+                rawboxes = gt['boxes']
+                rawboxes = box_cxcywh_to_xyxy(rawboxes)
+                rawcls = gt['labels']
+                boxes = []
+                cls = []
+                for j in range(len(rawcls)):
+                    tmpcls = rawcls[j]
+                    cls.extend(tmpcls)
+                    for _ in range(len(tmpcls)):
+                        boxes.append(rawboxes[j])
+                boxes = torch.stack(boxes)
+                boxes[:,0::2] = boxes[:,0::2] * test_hmdb.imgsize[1]
+                boxes[:,1::2] = boxes[:,1::2] * test_hmdb.imgsize[0]
+                cls = torch.tensor(cls).to(boxes.device)
+                ground_truth = {'boxes': boxes, 'labels': cls}
+                
+                if result_dict != None:
+                    preds.append(result_dict)
+                    tgts.append(ground_truth)
+            metric.update(preds, tgts)
             
-            if boxes.shape[0] == 0:
-                result_dict = None
-            else:
-                result_dict = {'boxes': boxes, 'labels': cls, 'scores': scores}
-            
-            gt = targets[i]
-            rawboxes = gt['boxes']
-            rawboxes = box_cxcywh_to_xyxy(rawboxes)
-            rawcls = gt['labels']
-            boxes = []
-            cls = []
-            for j in range(len(rawcls)):
-                tmpcls = rawcls[j]
-                cls.extend(tmpcls)
-                for _ in range(len(tmpcls)):
-                    boxes.append(rawboxes[j])
-            boxes = torch.stack(boxes)
-            boxes[:,0::2] = boxes[:,0::2] * test_hmdb.imgsize[1]
-            boxes[:,1::2] = boxes[:,1::2] * test_hmdb.imgsize[0]
-            cls = torch.tensor(cls).to(boxes.device)
-            ground_truth = {'boxes': boxes, 'labels': cls}
-            
-            if result_dict != None:
-                preds.append(result_dict)
-                tgts.append(ground_truth)
-        metric.update(preds, tgts)
-        
-    pprint(metric.compute())
-    hmdb_fmap2, hmdb_fmap5 = 0, metric.compute()['map_50'].cpu().detach().item()
+        pprint(metric.compute())
+        hmdb_fmap2, hmdb_fmap5 = 0, metric.compute()['map_50'].cpu().detach().item()
 
     stats = json.load(open(args.JSON))
     stats.append({'ava0.2': ava_fmap2,
