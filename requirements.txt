@@ -16,3 +16,4 @@ matplotlib
 # for baseline
 lapx
 transformers
+ultralytics

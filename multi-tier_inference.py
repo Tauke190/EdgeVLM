@@ -10,29 +10,29 @@ import torch
 import torch.nn.functional as F
 from torchvision.transforms import v2
 from sia import get_sia, PostProcessViz
+import json
+from contextlib import nullcontext
 
 parser = argparse.ArgumentParser(description="Multi-Tier Surveillance Inference: Motion → Person → Action")
-parser.add_argument("-F", type=str, required=True, help="video file path")
-parser.add_argument("-thresh", type=float, default=0.3, help="action cosine threshold")
-parser.add_argument(
-    "--act-map-file",
-    type=str,
-    default="gpt/MEVA_to_GPT_AVA.json",
-    help="JSON mapping from external action labels to GPT_AVA action keys",
-)
-parser.add_argument(
-    "--debug-frame-no",
-    type=int,
-    help="Process only the first N frames, then stop early for quick debugging",
-)
-parser.add_argument(
-    "--debug-start-frame",
-    type=int,
-    help="Start processing from this 1-based frame number before applying --debug-frame-no",
-)
+parser.add_argument("-F", type=str, help="video file path")
+parser.add_argument("-thresh", type=float, default=0.5, help="action cosine threshold")
+parser.add_argument("-act", type=lambda s: s.split(","), help="comma-separated list of actions")
 parser.add_argument("-color", type=str, default='green', help="color for visualization")
 parser.add_argument("-font", type=float, default=0.5, help="font size")
 parser.add_argument("-line", type=int, default=2, help="line thickness")
+parser.add_argument("--camera-device", type=int, default=0, help="camera device index when reading live input")
+parser.add_argument("--simulate-live", action='store_true',
+                    help="pace video-file input against wall clock so it behaves like a live camera stream")
+parser.add_argument("--target-fps", type=float, default=None,
+                    help="override FPS used for live pacing when simulating a camera from file input")
+parser.add_argument("--drop-frames", action='store_true',
+                    help="drop file frames when processing falls behind live pacing")
+parser.add_argument("--show-preview", action='store_true', help="show a live preview window")
+parser.add_argument("--no-write-output", action='store_true', help="disable output video writing")
+parser.add_argument("--precision", choices=["fp32", "fp16"], default="fp16",
+                    help="precision for Tier 3 action inference")
+parser.add_argument("--no-autocast", action='store_true',
+                    help="disable autocast and run the model directly in the selected precision")
 
 # Tier 1: Motion Detection
 parser.add_argument("--motion-thresh", type=int, default= 1000, help="min contour area for motion")
@@ -82,62 +82,40 @@ color = COLORS[args.color]
 font = args.font
 thickness = args.line
 
+if not args.F and args.simulate_live:
+    parser.error("--simulate-live requires -F with a video file.")
 
-def get_process_memory_mb():
-    try:
-        with open("/proc/self/status", "r", encoding="utf-8") as handle:
-            for line in handle:
-                if line.startswith("VmRSS:"):
-                    parts = line.split()
-                    return int(parts[1]) / 1024.0
-    except Exception:
-        return None
-    return None
+source_label = args.F if args.F else f"camera:{args.camera_device}"
+print(f"Loading source: {source_label}")
+cap = cv2.VideoCapture(args.F if args.F else args.camera_device)
+if not cap.isOpened():
+    print(f"✗ Failed to open source: {source_label}")
+    sys.exit(1)
 
-
-def get_cuda_memory_summary(device):
-    if not torch.cuda.is_available():
-        return None
-    if isinstance(device, str) and not device.startswith("cuda"):
-        return None
-
-    allocated_mb = torch.cuda.memory_allocated() / (1024 ** 2)
-    reserved_mb = torch.cuda.memory_reserved() / (1024 ** 2)
-    return allocated_mb, reserved_mb
-
-
-def make_autocast_context(enabled):
-    if enabled:
-        return torch.autocast(device_type="cuda", dtype=torch.float16)
-    return nullcontext()
-
-
-print(f"Loading video: {args.F}")
-cap = cv2.VideoCapture(args.F)
 frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 fps = cap.get(cv2.CAP_PROP_FPS)
-print(f"Video: {frame_width}x{frame_height}, {total_frames} frames @ {fps} fps")
+source_is_file = bool(args.F)
+if fps <= 0:
+    fps = args.target_fps if args.target_fps else 30.0
+elif args.target_fps:
+    fps = args.target_fps
 
-if args.debug_start_frame is not None:
-    if args.debug_start_frame < 1:
-        raise ValueError("--debug-start-frame must be >= 1")
-    if total_frames > 0 and args.debug_start_frame > total_frames:
-        raise ValueError("--debug-start-frame is beyond the end of the video")
-    cap.set(cv2.CAP_PROP_POS_FRAMES, args.debug_start_frame - 1)
-    print(f"Debug start frame: {args.debug_start_frame}")
+if source_is_file:
+    print(f"Video: {frame_width}x{frame_height}, {total_frames} frames @ {fps} fps")
+else:
+    print(f"Camera: {frame_width}x{frame_height} @ {fps} fps")
 
-output_path = 'multitier_' + args.F.split('.')[0] + '.mp4'
-writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
+output_path = None
+writer = None
+if not args.no_write_output:
+    output_name = 'multitier_' + (os.path.splitext(os.path.basename(args.F))[0] if args.F else f'camera_{args.camera_device}') + '.mp4'
+    output_path = output_name
+    writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-use_sia_fp16 = args.sia_precision == "fp16" and str(device).startswith("cuda")
-use_person_fp16 = args.person_precision == "fp16" and str(device).startswith("cuda")
-if args.sia_precision == "fp16" and not use_sia_fp16:
-    raise RuntimeError("SIA FP16 precision is only supported on CUDA.")
-if args.person_precision == "fp16" and not use_person_fp16:
-    raise RuntimeError("Person detector FP16 precision is only supported on CUDA.")
+if args.show_preview:
+    cv2.namedWindow("Multi-Tier Inference", cv2.WINDOW_NORMAL)
 
 # ====================
 # TIER 1: Motion Detection (CPU)
@@ -197,6 +175,15 @@ person_gate_frame_count = 0
 # ====================
 
 print(f"=== Initializing Tier 3: SIA Action Detection (device: {device}) ===")
+use_fp16 = args.precision == "fp16"
+autocast_enabled = use_fp16 and not args.no_autocast
+
+if use_fp16 and device != "cuda":
+    print("⚠ FP16 requested but CUDA is unavailable. Falling back to FP32.")
+    use_fp16 = False
+    autocast_enabled = False
+
+print(f"=== Tier 3 precision: {'fp16' if use_fp16 else 'fp32'} (autocast: {'on' if autocast_enabled else 'off'}) ===")
 
 # Initialize Tier 3 state (may be used even if skip_tier3 is True)
 sia_active = False
@@ -280,13 +267,21 @@ if not args.skip_tier3:
             strict=False,
         )
         model.to(device)
+        if use_fp16 and not autocast_enabled:
+            model.half()
         model.eval()
         print(f"✓ SIA model loaded (precision={args.sia_precision})")
 
         # Pre-encode text embeddings (one-time)
+        text_autocast_context = (
+            torch.autocast(device_type="cuda", dtype=torch.float16)
+            if autocast_enabled
+            else nullcontext()
+        )
         with torch.no_grad():
-            with make_autocast_context(use_sia_fp16):
-                text_embeds = build_text_embedding_bank(model, prompt_groups)
+            with text_autocast_context:
+                text_embeds = model.encode_text(captions)
+        text_embeds = F.normalize(text_embeds, dim=-1)
 
         tfs = v2.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         postprocess = PostProcessViz()
@@ -304,6 +299,9 @@ if not args.skip_tier3:
 # ====================
 
 frame_count = 0
+source_frame_index = 0
+skipped_frames = 0
+replayed_fill_frames = 0
 motion_triggers = 0
 frames_with_motion = 0
 person_detections = 0
@@ -340,11 +338,31 @@ print("Starting multi-tier inference...")
 print(f"{'='*60}\n")
 
 start_time = time.time()
+stream_start_time = time.perf_counter()
+last_written_frame = None
 
 while cap.isOpened():
+    frames_skipped_this_iter = 0
+    if args.simulate_live and source_is_file:
+        elapsed_stream = time.perf_counter() - stream_start_time
+        next_target_time = source_frame_index / fps
+        if next_target_time > elapsed_stream:
+            time.sleep(next_target_time - elapsed_stream)
+        elif args.drop_frames:
+            desired_frame_index = int(elapsed_stream * fps)
+            frames_to_skip = max(0, desired_frame_index - source_frame_index)
+            while frames_to_skip > 0:
+                if not cap.grab():
+                    break
+                source_frame_index += 1
+                skipped_frames += 1
+                frames_skipped_this_iter += 1
+                frames_to_skip -= 1
+
     ret, frame = cap.read()
     if not ret:
         break
+    source_frame_index += 1
 
     frame_count += 1
     out_frame = frame.copy()
@@ -469,30 +487,36 @@ while cap.isOpened():
                 sia_active = True
                 sia_frame_count = 0
 
-                clip_torch = torch.tensor(np.array(buffer)[0:buffer_max_len:buffer_max_len//9]) / 255
-                clip_torch = tfs(clip_torch).unsqueeze(0).to(device)
+            clip_torch = torch.tensor(np.array(buffer)[0:buffer_max_len:buffer_max_len//9], dtype=torch.float32) / 255
+            clip_torch = tfs(clip_torch)
+            clip_torch = clip_torch.unsqueeze(0).to(device)
+            if use_fp16 and not autocast_enabled:
+                clip_torch = clip_torch.half()
 
-                with torch.no_grad():
-                    with make_autocast_context(use_sia_fp16):
-                        outputs = model.encode_vision(clip_torch)
-                        similarity_text_embeds = text_embeds.to(dtype=outputs['pred_logits'].dtype)
-                        outputs['pred_logits'] = F.normalize(outputs['pred_logits'], dim=-1) @ similarity_text_embeds.T
-                    outputs = {
-                        key: value.float() if torch.is_tensor(value) and value.is_floating_point() else value
-                        for key, value in outputs.items()
-                    }
-                    result = postprocess(outputs, (frame_height, frame_width), human_conf=0.9, thresh=args.thresh)[0]
-                    result['text_labels'] = [[captions[e] for e in ele] for ele in result['labels']]
-                    last_boxes = result['boxes']
-                    last_labels = result['text_labels']
-                    last_scores = result['scores']
-                    
-                    # Cache the first detected action for reuse
-                    if len(last_boxes) > 0 and len(last_labels[0]) > 0:
-                        max_idx = torch.argmax(last_scores[0]).item()
-                        cached_action_text = f"{last_labels[0][max_idx]} {round(last_scores[0][max_idx].item(), 2)}"
-        else:
-            action_gate_frame_count = 0
+            with torch.no_grad():
+                inference_autocast_context = (
+                    torch.autocast(device_type="cuda", dtype=torch.float16)
+                    if autocast_enabled
+                    else nullcontext()
+                )
+                with inference_autocast_context:
+                    outputs = model.encode_vision(clip_torch)
+                    similarity_text_embeds = text_embeds.to(dtype=outputs['pred_logits'].dtype)
+                    outputs['pred_logits'] = F.normalize(outputs['pred_logits'], dim=-1) @ similarity_text_embeds.T
+                outputs = {
+                    key: value.float() if torch.is_tensor(value) and value.is_floating_point() else value
+                    for key, value in outputs.items()
+                }
+                result = postprocess(outputs, (frame_height, frame_width), human_conf=0.9, thresh=args.thresh)[0]
+                result['text_labels'] = [[captions[e] for e in ele] for ele in result['labels']]
+                last_boxes = result['boxes']
+                last_labels = result['text_labels']
+                last_scores = result['scores']
+                
+                # Cache the first detected action for reuse
+                if len(last_boxes) > 0 and len(last_labels[0]) > 0:
+                    max_idx = torch.argmax(last_scores[0]).item()
+                    cached_action_text = f"{last_labels[0][max_idx]} {round(last_scores[0][max_idx].item(), 2)}"
 
     # Deactivate Tier 3 inference if no persons detected for cooldown period
     # BUT keep the cached action predictions (last_boxes/labels/scores) visible
@@ -588,31 +612,36 @@ while cap.isOpened():
     if not args.skip_tier3:
         cv2.putText(out_frame, f"T3: {tier3_status}", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, font * 0.8, tier3_color, 1)
 
-    cv2.putText(out_frame, f"Frame: {frame_count}/{total_frames}", (10, frame_height - 20),
-               cv2.FONT_HERSHEY_SIMPLEX, font * 0.7, (255, 255, 255), 1)
+    frame_text = f"Frame: {frame_count}/{total_frames}" if source_is_file and total_frames > 0 else f"Frame: {frame_count}"
+    cv2.putText(out_frame, frame_text, (10, frame_height - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, font * 0.7, (255, 255, 255), 1)
+
+    if args.simulate_live and source_is_file:
+        cv2.putText(out_frame, f"Live Sim: {fps:.1f} fps | Dropped: {skipped_frames}", (10, frame_height - 45),
+                    cv2.FONT_HERSHEY_SIMPLEX, font * 0.6, (255, 255, 255), 1)
 
     # Debug: overlay motion mask
     if args.debug:
         fg_mask_vis = cv2.cvtColor(fg_mask, cv2.COLOR_GRAY2BGR)
         out_frame = cv2.addWeighted(out_frame, 0.7, fg_mask_vis, 0.3, 0)
 
-    writer.write(out_frame)
+    if writer is not None:
+        if frames_skipped_this_iter > 0 and last_written_frame is not None and args.simulate_live and source_is_file:
+            for _ in range(frames_skipped_this_iter):
+                writer.write(last_written_frame)
+            replayed_fill_frames += frames_skipped_this_iter
+        writer.write(out_frame)
+        last_written_frame = out_frame.copy()
+
+    if args.show_preview:
+        cv2.imshow("Multi-Tier Inference", out_frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
     if frame_count % 30 == 0:
         elapsed = time.time() - start_time
-        memory_parts = []
-        process_memory_mb = get_process_memory_mb()
-        if process_memory_mb is not None:
-            memory_parts.append(f"RAM: {process_memory_mb:.1f} MB")
-        cuda_memory = get_cuda_memory_summary(device)
-        if cuda_memory is not None:
-            allocated_mb, reserved_mb = cuda_memory
-            memory_parts.append(f"CUDA alloc/res: {allocated_mb:.1f}/{reserved_mb:.1f} MB")
-        memory_status = " | ".join(memory_parts)
-        if memory_status:
-            memory_status = " | " + memory_status
-
-        print(f"  Frame {frame_count}/{total_frames} | "
+        progress_text = f"{frame_count}/{total_frames}" if source_is_file and total_frames > 0 else f"{frame_count}"
+        print(f"  Frame {progress_text} | "
               f"T1: {'ON' if motion_active else 'OFF'} | "
               f"T2: {'ON' if person_detected else 'OFF'} | "
               f"T3: {'ON' if sia_active and not args.skip_tier3 else 'OFF'} | "
@@ -624,13 +653,16 @@ while cap.isOpened():
         break
 
 cap.release()
-writer.release()
+if writer is not None:
+    writer.release()
+if args.show_preview:
+    cv2.destroyAllWindows()
 
 elapsed = time.time() - start_time
 
 print(f"\n{'='*60}")
 print(f"✓ Multi-tier inference complete!")
-print(f"  Output: {output_path}")
+print(f"  Output: {output_path if output_path else 'disabled'}")
 print(f"{'='*60}")
 
 if frame_count == 0:
@@ -663,4 +695,11 @@ if not args.skip_tier3 and sia_flops_per_pass > 0:
 
 print(f"\nProcessing:")
 print(f"  Total frames: {frame_count}")
+print(f"  Tier 3 precision: {'fp16' if use_fp16 else 'fp32'}")
+if not args.skip_tier3:
+    print(f"  Tier 3 autocast: {'enabled' if autocast_enabled else 'disabled'}")
+if args.simulate_live and source_is_file:
+    print(f"  Source frames dropped to maintain live pacing: {skipped_frames}")
+    if writer is not None:
+        print(f"  Replay filler frames written to preserve timing: {replayed_fill_frames}")
 print(f"  Processing time: {elapsed:.1f}s ({frame_count/elapsed:.1f} fps)")
