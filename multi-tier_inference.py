@@ -11,12 +11,21 @@ from sia import get_sia, PostProcessViz
 import json
 
 parser = argparse.ArgumentParser(description="Multi-Tier Surveillance Inference: Motion → Person → Action")
-parser.add_argument("-F", type=str, required=True, help="video file path")
+parser.add_argument("-F", type=str, help="video file path")
 parser.add_argument("-thresh", type=float, default=0.5, help="action cosine threshold")
 parser.add_argument("-act", type=lambda s: s.split(","), help="comma-separated list of actions")
 parser.add_argument("-color", type=str, default='green', help="color for visualization")
 parser.add_argument("-font", type=float, default=0.5, help="font size")
 parser.add_argument("-line", type=int, default=2, help="line thickness")
+parser.add_argument("--camera-device", type=int, default=0, help="camera device index when reading live input")
+parser.add_argument("--simulate-live", action='store_true',
+                    help="pace video-file input against wall clock so it behaves like a live camera stream")
+parser.add_argument("--target-fps", type=float, default=None,
+                    help="override FPS used for live pacing when simulating a camera from file input")
+parser.add_argument("--drop-frames", action='store_true',
+                    help="drop file frames when processing falls behind live pacing")
+parser.add_argument("--show-preview", action='store_true', help="show a live preview window")
+parser.add_argument("--no-write-output", action='store_true', help="disable output video writing")
 
 # Tier 1: Motion Detection
 parser.add_argument("--motion-thresh", type=int, default= 1000, help="min contour area for motion")
@@ -49,16 +58,40 @@ color = COLORS[args.color]
 font = args.font
 thickness = args.line
 
-print(f"Loading video: {args.F}")
-cap = cv2.VideoCapture(args.F)
+if not args.F and args.simulate_live:
+    parser.error("--simulate-live requires -F with a video file.")
+
+source_label = args.F if args.F else f"camera:{args.camera_device}"
+print(f"Loading source: {source_label}")
+cap = cv2.VideoCapture(args.F if args.F else args.camera_device)
+if not cap.isOpened():
+    print(f"✗ Failed to open source: {source_label}")
+    sys.exit(1)
+
 frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 fps = cap.get(cv2.CAP_PROP_FPS)
-print(f"Video: {frame_width}x{frame_height}, {total_frames} frames @ {fps} fps")
+source_is_file = bool(args.F)
+if fps <= 0:
+    fps = args.target_fps if args.target_fps else 30.0
+elif args.target_fps:
+    fps = args.target_fps
 
-output_path = 'multitier_' + args.F.split('.')[0] + '.mp4'
-writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
+if source_is_file:
+    print(f"Video: {frame_width}x{frame_height}, {total_frames} frames @ {fps} fps")
+else:
+    print(f"Camera: {frame_width}x{frame_height} @ {fps} fps")
+
+output_path = None
+writer = None
+if not args.no_write_output:
+    output_name = 'multitier_' + (os.path.splitext(os.path.basename(args.F))[0] if args.F else f'camera_{args.camera_device}') + '.mp4'
+    output_path = output_name
+    writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
+
+if args.show_preview:
+    cv2.namedWindow("Multi-Tier Inference", cv2.WINDOW_NORMAL)
 
 # ====================
 # TIER 1: Motion Detection (CPU)
@@ -174,6 +207,8 @@ if not args.skip_tier3:
 # ====================
 
 frame_count = 0
+source_frame_index = 0
+skipped_frames = 0
 motion_triggers = 0
 frames_with_motion = 0
 person_detections = 0
@@ -210,11 +245,28 @@ print("Starting multi-tier inference...")
 print(f"{'='*60}\n")
 
 start_time = time.time()
+stream_start_time = time.perf_counter()
 
 while cap.isOpened():
+    if args.simulate_live and source_is_file:
+        elapsed_stream = time.perf_counter() - stream_start_time
+        next_target_time = source_frame_index / fps
+        if next_target_time > elapsed_stream:
+            time.sleep(next_target_time - elapsed_stream)
+        elif args.drop_frames:
+            desired_frame_index = int(elapsed_stream * fps)
+            frames_to_skip = max(0, desired_frame_index - source_frame_index)
+            while frames_to_skip > 0:
+                if not cap.grab():
+                    break
+                source_frame_index += 1
+                skipped_frames += 1
+                frames_to_skip -= 1
+
     ret, frame = cap.read()
     if not ret:
         break
+    source_frame_index += 1
 
     frame_count += 1
     out_frame = frame.copy()
@@ -430,32 +482,47 @@ while cap.isOpened():
     if not args.skip_tier3:
         cv2.putText(out_frame, f"T3: {tier3_status}", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, font * 0.8, tier3_color, 1)
 
-    cv2.putText(out_frame, f"Frame: {frame_count}/{total_frames}", (10, frame_height - 20),
-               cv2.FONT_HERSHEY_SIMPLEX, font * 0.7, (255, 255, 255), 1)
+    frame_text = f"Frame: {frame_count}/{total_frames}" if source_is_file and total_frames > 0 else f"Frame: {frame_count}"
+    cv2.putText(out_frame, frame_text, (10, frame_height - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, font * 0.7, (255, 255, 255), 1)
+
+    if args.simulate_live and source_is_file:
+        cv2.putText(out_frame, f"Live Sim: {fps:.1f} fps | Dropped: {skipped_frames}", (10, frame_height - 45),
+                    cv2.FONT_HERSHEY_SIMPLEX, font * 0.6, (255, 255, 255), 1)
 
     # Debug: overlay motion mask
     if args.debug:
         fg_mask_vis = cv2.cvtColor(fg_mask, cv2.COLOR_GRAY2BGR)
         out_frame = cv2.addWeighted(out_frame, 0.7, fg_mask_vis, 0.3, 0)
 
-    writer.write(out_frame)
+    if writer is not None:
+        writer.write(out_frame)
+
+    if args.show_preview:
+        cv2.imshow("Multi-Tier Inference", out_frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
     if frame_count % 30 == 0:
         elapsed = time.time() - start_time
-        print(f"  Frame {frame_count}/{total_frames} | "
+        progress_text = f"{frame_count}/{total_frames}" if source_is_file and total_frames > 0 else f"{frame_count}"
+        print(f"  Frame {progress_text} | "
               f"T1: {'ON' if motion_active else 'OFF'} | "
               f"T2: {'ON' if person_detected else 'OFF'} | "
               f"T3: {'ON' if sia_active and not args.skip_tier3 else 'OFF'} | "
               f"FPS: {frame_count/elapsed:.1f}")
 
 cap.release()
-writer.release()
+if writer is not None:
+    writer.release()
+if args.show_preview:
+    cv2.destroyAllWindows()
 
 elapsed = time.time() - start_time
 
 print(f"\n{'='*60}")
 print(f"✓ Multi-tier inference complete!")
-print(f"  Output: {output_path}")
+print(f"  Output: {output_path if output_path else 'disabled'}")
 print(f"{'='*60}")
 
 if frame_count == 0:
@@ -488,4 +555,6 @@ if not args.skip_tier3 and sia_flops_per_pass > 0:
 
 print(f"\nProcessing:")
 print(f"  Total frames: {frame_count}")
+if args.simulate_live and source_is_file:
+    print(f"  Source frames dropped to maintain live pacing: {skipped_frames}")
 print(f"  Processing time: {elapsed:.1f}s ({frame_count/elapsed:.1f} fps)")
