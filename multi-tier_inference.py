@@ -209,6 +209,7 @@ if not args.skip_tier3:
 frame_count = 0
 source_frame_index = 0
 skipped_frames = 0
+replayed_fill_frames = 0
 motion_triggers = 0
 frames_with_motion = 0
 person_detections = 0
@@ -246,8 +247,10 @@ print(f"{'='*60}\n")
 
 start_time = time.time()
 stream_start_time = time.perf_counter()
+last_written_frame = None
 
 while cap.isOpened():
+    frames_skipped_this_iter = 0
     if args.simulate_live and source_is_file:
         elapsed_stream = time.perf_counter() - stream_start_time
         next_target_time = source_frame_index / fps
@@ -261,6 +264,7 @@ while cap.isOpened():
                     break
                 source_frame_index += 1
                 skipped_frames += 1
+                frames_skipped_this_iter += 1
                 frames_to_skip -= 1
 
     ret, frame = cap.read()
@@ -496,7 +500,12 @@ while cap.isOpened():
         out_frame = cv2.addWeighted(out_frame, 0.7, fg_mask_vis, 0.3, 0)
 
     if writer is not None:
+        if frames_skipped_this_iter > 0 and last_written_frame is not None and args.simulate_live and source_is_file:
+            for _ in range(frames_skipped_this_iter):
+                writer.write(last_written_frame)
+            replayed_fill_frames += frames_skipped_this_iter
         writer.write(out_frame)
+        last_written_frame = out_frame.copy()
 
     if args.show_preview:
         cv2.imshow("Multi-Tier Inference", out_frame)
@@ -557,4 +566,6 @@ print(f"\nProcessing:")
 print(f"  Total frames: {frame_count}")
 if args.simulate_live and source_is_file:
     print(f"  Source frames dropped to maintain live pacing: {skipped_frames}")
+    if writer is not None:
+        print(f"  Replay filler frames written to preserve timing: {replayed_fill_frames}")
 print(f"  Processing time: {elapsed:.1f}s ({frame_count/elapsed:.1f} fps)")
