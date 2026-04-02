@@ -4,16 +4,32 @@ import cv2
 import numpy as np
 import argparse
 import time
+import json
+from contextlib import nullcontext
 import torch
 import torch.nn.functional as F
 from torchvision.transforms import v2
 from sia import get_sia, PostProcessViz
-import json
 
 parser = argparse.ArgumentParser(description="Multi-Tier Surveillance Inference: Motion → Person → Action")
 parser.add_argument("-F", type=str, required=True, help="video file path")
-parser.add_argument("-thresh", type=float, default=0.5, help="action cosine threshold")
-parser.add_argument("-act", type=lambda s: s.split(","), help="comma-separated list of actions")
+parser.add_argument("-thresh", type=float, default=0.3, help="action cosine threshold")
+parser.add_argument(
+    "--act-map-file",
+    type=str,
+    default="gpt/MEVA_to_GPT_AVA.json",
+    help="JSON mapping from external action labels to GPT_AVA action keys",
+)
+parser.add_argument(
+    "--debug-frame-no",
+    type=int,
+    help="Process only the first N frames, then stop early for quick debugging",
+)
+parser.add_argument(
+    "--debug-start-frame",
+    type=int,
+    help="Start processing from this 1-based frame number before applying --debug-frame-no",
+)
 parser.add_argument("-color", type=str, default='green', help="color for visualization")
 parser.add_argument("-font", type=float, default=0.5, help="font size")
 parser.add_argument("-line", type=int, default=2, help="line thickness")
@@ -26,13 +42,30 @@ parser.add_argument("--cooldown", type=int, default=60, help="frames to stay act
 # Tier 2: Person Detection
 parser.add_argument("--person-model", type=str, default='yolov8n', choices=['yolov8n', 'mobilenet-ssd'],
                     help="person detector model")
+parser.add_argument("--person-weights", type=str, default="weights/yolov8n.pt",
+                    help="weights for the person detector; pass a TensorRT .engine file for YOLO TensorRT inference")
 parser.add_argument("--person-thresh", type=float, default=0.3, help="person confidence threshold")
+parser.add_argument("--person-precision", type=str, default="fp32", choices=["fp32", "fp16"],
+                    help="precision for YOLO person inference")
+parser.add_argument("--person-stride", type=int, default=1,
+                    help="run person detection every N eligible frames and reuse boxes between runs")
 
 # Tier 3: Action Detection
 parser.add_argument("--skip-tier3", action='store_true', help="skip Tier 3 action detection (motion+person only)")
+parser.add_argument("--sia-weights", "--action-weights", dest="sia_weights", type=str, default="weights/avak_b16_11.pt",
+                    help="weights for the SIA action model")
+parser.add_argument("--sia-precision", "--action-precision", dest="sia_precision", type=str, default="fp32", choices=["fp32", "fp16"],
+                    help="precision for SIA inference")
+parser.add_argument("--action-stride", type=int, default=1,
+                    help="run action detection every N eligible frames and reuse labels between runs")
 parser.add_argument("--debug", action='store_true', help="show motion mask and tier states")
 
 args = parser.parse_args()
+
+if args.person_stride < 1:
+    raise ValueError("--person-stride must be >= 1")
+if args.action_stride < 1:
+    raise ValueError("--action-stride must be >= 1")
 
 COLORS = {
     "red": (0, 0, 255),
@@ -49,6 +82,36 @@ color = COLORS[args.color]
 font = args.font
 thickness = args.line
 
+
+def get_process_memory_mb():
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    return int(parts[1]) / 1024.0
+    except Exception:
+        return None
+    return None
+
+
+def get_cuda_memory_summary(device):
+    if not torch.cuda.is_available():
+        return None
+    if isinstance(device, str) and not device.startswith("cuda"):
+        return None
+
+    allocated_mb = torch.cuda.memory_allocated() / (1024 ** 2)
+    reserved_mb = torch.cuda.memory_reserved() / (1024 ** 2)
+    return allocated_mb, reserved_mb
+
+
+def make_autocast_context(enabled):
+    if enabled:
+        return torch.autocast(device_type="cuda", dtype=torch.float16)
+    return nullcontext()
+
+
 print(f"Loading video: {args.F}")
 cap = cv2.VideoCapture(args.F)
 frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -57,8 +120,24 @@ total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 fps = cap.get(cv2.CAP_PROP_FPS)
 print(f"Video: {frame_width}x{frame_height}, {total_frames} frames @ {fps} fps")
 
+if args.debug_start_frame is not None:
+    if args.debug_start_frame < 1:
+        raise ValueError("--debug-start-frame must be >= 1")
+    if total_frames > 0 and args.debug_start_frame > total_frames:
+        raise ValueError("--debug-start-frame is beyond the end of the video")
+    cap.set(cv2.CAP_PROP_POS_FRAMES, args.debug_start_frame - 1)
+    print(f"Debug start frame: {args.debug_start_frame}")
+
 output_path = 'multitier_' + args.F.split('.')[0] + '.mp4'
 writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+use_sia_fp16 = args.sia_precision == "fp16" and str(device).startswith("cuda")
+use_person_fp16 = args.person_precision == "fp16" and str(device).startswith("cuda")
+if args.sia_precision == "fp16" and not use_sia_fp16:
+    raise RuntimeError("SIA FP16 precision is only supported on CUDA.")
+if args.person_precision == "fp16" and not use_person_fp16:
+    raise RuntimeError("Person detector FP16 precision is only supported on CUDA.")
 
 # ====================
 # TIER 1: Motion Detection (CPU)
@@ -88,8 +167,9 @@ person_detector = None
 if args.person_model == 'yolov8n':
     try:
         from ultralytics import YOLO
-        person_detector = YOLO('weights/yolov8n.pt')
-        print("✓ YOLOv8n loaded")
+        person_detector = YOLO(args.person_weights)
+        backend_name = "TensorRT" if args.person_weights.endswith(".engine") else "PyTorch"
+        print(f"✓ YOLOv8n loaded ({backend_name}, precision={args.person_precision})")
     except ImportError:
         print("⚠ ultralytics not found. Install: pip install ultralytics")
         args.person_model = 'mobilenet-ssd'
@@ -108,12 +188,14 @@ if args.person_model == 'mobilenet-ssd':
 
 person_detected = False
 person_boxes = []
+cached_person_detected = False
+cached_person_boxes = []
+person_gate_frame_count = 0
 
 # ====================
 # TIER 3: SIA Action Detection
 # ====================
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"=== Initializing Tier 3: SIA Action Detection (device: {device}) ===")
 
 # Initialize Tier 3 state (may be used even if skip_tier3 is True)
@@ -130,33 +212,81 @@ postprocess = None
 buffer = []
 plotbuffer = []
 buffer_max_len = 72
+action_gate_frame_count = 0
+
+
+def load_json(path):
+    with open(path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not data:
+        raise ValueError(f"No data found in {path}")
+    return data
+
+def build_text_embedding_bank(model, prompt_groups):
+    embedding_bank = []
+    for prompts in prompt_groups:
+        if not prompts:
+            raise ValueError("Encountered an action with no prompts")
+        prompt_embeds = model.encode_text(prompts)
+        prompt_embeds = F.normalize(prompt_embeds, dim=-1)
+        pooled_embed = prompt_embeds.mean(dim=0)
+        pooled_embed = F.normalize(pooled_embed, dim=-1)
+        embedding_bank.append(pooled_embed)
+    return torch.stack(embedding_bank, dim=0)
+
+def resolve_actions_for_inference(act_map_file):
+    gpt_ava_data = load_json("gpt/GPT_AVA.json")
+    action_map = load_json(act_map_file)
+    display_labels = []
+    prompt_groups = []
+    unresolved_actions = []
+
+    for action, ava_action in action_map.items():
+        if ava_action not in gpt_ava_data:
+            unresolved_actions.append(action)
+            continue
+        display_labels.append(action)
+        prompt_groups.append(gpt_ava_data[ava_action])
+
+    if not display_labels:
+        raise ValueError(
+            "No actions in the mapping file could be resolved through GPT_AVA.json."
+        )
+    return display_labels, prompt_groups, unresolved_actions
 
 if not args.skip_tier3:
     try:
-        # Load default actions
-        with open('gpt/GPT_AVA.json', 'r') as f:
-            gpt_data = json.load(f)
-            DEFAULT_ACTIONS = list(gpt_data.keys())
+        captions, prompt_groups, unresolved_actions = resolve_actions_for_inference(
+            act_map_file=args.act_map_file,
+        )
+        print(f"Loaded action mapping from: {args.act_map_file}")
 
-        captions = args.act
-        if captions is None:
-            captions = DEFAULT_ACTIONS
-        else:
-            captions = [act.replace('_', ' ') for act in captions]
+        if unresolved_actions:
+            print("Skipping unmapped or unsupported actions:")
+            for action in unresolved_actions:
+                print(f"  - {action}")
+        
+        if args.debug:
+            print("Loaded action descriptions:")
+            for idx, (caption, prompts) in enumerate(zip(captions, prompt_groups), start=1):
+                print(f"  {idx:02d}. {caption}")
+                print(f"      prompt count: {len(prompts)}")
+                print(f"      prompt preview: {prompts[0]}")
 
         print(f"Loading SIA model (actions: {len(captions)})...")
         model = get_sia(size='b', pretrain=None, det_token_num=20, text_lora=True, num_frames=9)['sia']
         model.load_state_dict(
-            torch.load('weights/avak_b16_11.pt', map_location=device, weights_only=True),
+            torch.load(args.sia_weights, map_location=device, weights_only=True),
             strict=False,
         )
         model.to(device)
         model.eval()
-        print("✓ SIA model loaded")
+        print(f"✓ SIA model loaded (precision={args.sia_precision})")
 
         # Pre-encode text embeddings (one-time)
-        text_embeds = model.encode_text(captions)
-        text_embeds = F.normalize(text_embeds, dim=-1)
+        with torch.no_grad():
+            with make_autocast_context(use_sia_fp16):
+                text_embeds = build_text_embedding_bank(model, prompt_groups)
 
         tfs = v2.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         postprocess = PostProcessViz()
@@ -262,38 +392,55 @@ while cap.isOpened():
 
     # Run person detection if: (1) motion detected OR (2) still in warmup period
     if (motion_active or not warmup_complete) and person_detector:
-        yolo_inference_count += 1  # Track YOLO inference call
-        try:
-            if args.person_model == 'yolov8n':
-                # YOLOv8n inference
-                results = person_detector(frame, conf=args.person_thresh, verbose=False)
-                for result in results:
-                    for box in result.boxes:
-                        if int(box.cls[0]) == 0:  # COCO class 0 = person
-                            person_detected = True
-                            person_boxes.append(box.xyxy[0].cpu().numpy())
-                            person_detections += 1
+        person_gate_frame_count += 1
+        should_run_person_detector = ((person_gate_frame_count - 1) % args.person_stride) == 0
+        if should_run_person_detector:
+            yolo_inference_count += 1  # Track YOLO inference call
+            cached_person_detected = False
+            cached_person_boxes = []
+            try:
+                if args.person_model == 'yolov8n':
+                    # YOLOv8n inference
+                    results = person_detector(
+                        frame,
+                        conf=args.person_thresh,
+                        verbose=False,
+                        half=use_person_fp16,
+                    )
+                    for result in results:
+                        for box in result.boxes:
+                            if int(box.cls[0]) == 0:  # COCO class 0 = person
+                                cached_person_detected = True
+                                cached_person_boxes.append(box.xyxy[0].cpu().numpy())
+                                person_detections += 1
 
-            elif args.person_model == 'mobilenet-ssd':
-                # MobileNet-SSD inference
-                blob = cv2.dnn.blobFromImage(frame, 0.007843, (300, 300), 127.5)
-                person_detector.setInput(blob)
-                detections = person_detector.forward()
+                elif args.person_model == 'mobilenet-ssd':
+                    # MobileNet-SSD inference
+                    blob = cv2.dnn.blobFromImage(frame, 0.007843, (300, 300), 127.5)
+                    person_detector.setInput(blob)
+                    detections = person_detector.forward()
 
-                h, w = frame.shape[:2]
-                for i in range(detections.shape[2]):
-                    confidence = detections[0, 0, i, 2]
-                    if confidence > args.person_thresh:
-                        idx = int(detections[0, 0, i, 1])
-                        if idx == 15:  # MobileNet-SSD person class
-                            person_detected = True
-                            box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-                            person_boxes.append(box)
-                            person_detections += 1
+                    h, w = frame.shape[:2]
+                    for i in range(detections.shape[2]):
+                        confidence = detections[0, 0, i, 2]
+                        if confidence > args.person_thresh:
+                            idx = int(detections[0, 0, i, 1])
+                            if idx == 15:  # MobileNet-SSD person class
+                                cached_person_detected = True
+                                box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                                cached_person_boxes.append(box)
+                                person_detections += 1
 
-        except Exception as e:
-            if frame_count == 1:  # Print error only once
-                print(f"⚠ Person detection error: {e}")
+            except Exception as e:
+                if frame_count == 1:  # Print error only once
+                    print(f"⚠ Person detection error: {e}")
+
+        person_detected = cached_person_detected
+        person_boxes = list(cached_person_boxes)
+    else:
+        person_gate_frame_count = 0
+        cached_person_detected = False
+        cached_person_boxes = []
 
     if person_detected:
         frames_with_persons += 1
@@ -314,27 +461,38 @@ while cap.isOpened():
 
         # Run inference only when buffer is full AND person is detected
         if len(buffer) >= buffer_max_len and person_detected:
-            sia_forward_passes += 1
-            total_flops += sia_flops_per_pass  # Accumulate FLOPs
-            sia_active = True
-            sia_frame_count = 0
+            action_gate_frame_count += 1
+            should_run_action_detector = ((action_gate_frame_count - 1) % args.action_stride) == 0
+            if should_run_action_detector:
+                sia_forward_passes += 1
+                total_flops += sia_flops_per_pass  # Accumulate FLOPs
+                sia_active = True
+                sia_frame_count = 0
 
-            clip_torch = torch.tensor(np.array(buffer)[0:buffer_max_len:buffer_max_len//9]) / 255
-            clip_torch = tfs(clip_torch)
+                clip_torch = torch.tensor(np.array(buffer)[0:buffer_max_len:buffer_max_len//9]) / 255
+                clip_torch = tfs(clip_torch).unsqueeze(0).to(device)
 
-            with torch.no_grad():
-                outputs = model.encode_vision(clip_torch.unsqueeze(0).to(device))
-                outputs['pred_logits'] = F.normalize(outputs['pred_logits'], dim=-1) @ text_embeds.T
-                result = postprocess(outputs, (frame_height, frame_width), human_conf=0.9, thresh=args.thresh)[0]
-                result['text_labels'] = [[captions[e] for e in ele] for ele in result['labels']]
-                last_boxes = result['boxes']
-                last_labels = result['text_labels']
-                last_scores = result['scores']
-                
-                # Cache the first detected action for reuse
-                if len(last_boxes) > 0 and len(last_labels[0]) > 0:
-                    max_idx = torch.argmax(last_scores[0]).item()
-                    cached_action_text = f"{last_labels[0][max_idx]} {round(last_scores[0][max_idx].item(), 2)}"
+                with torch.no_grad():
+                    with make_autocast_context(use_sia_fp16):
+                        outputs = model.encode_vision(clip_torch)
+                        similarity_text_embeds = text_embeds.to(dtype=outputs['pred_logits'].dtype)
+                        outputs['pred_logits'] = F.normalize(outputs['pred_logits'], dim=-1) @ similarity_text_embeds.T
+                    outputs = {
+                        key: value.float() if torch.is_tensor(value) and value.is_floating_point() else value
+                        for key, value in outputs.items()
+                    }
+                    result = postprocess(outputs, (frame_height, frame_width), human_conf=0.9, thresh=args.thresh)[0]
+                    result['text_labels'] = [[captions[e] for e in ele] for ele in result['labels']]
+                    last_boxes = result['boxes']
+                    last_labels = result['text_labels']
+                    last_scores = result['scores']
+                    
+                    # Cache the first detected action for reuse
+                    if len(last_boxes) > 0 and len(last_labels[0]) > 0:
+                        max_idx = torch.argmax(last_scores[0]).item()
+                        cached_action_text = f"{last_labels[0][max_idx]} {round(last_scores[0][max_idx].item(), 2)}"
+        else:
+            action_gate_frame_count = 0
 
     # Deactivate Tier 3 inference if no persons detected for cooldown period
     # BUT keep the cached action predictions (last_boxes/labels/scores) visible
@@ -442,11 +600,28 @@ while cap.isOpened():
 
     if frame_count % 30 == 0:
         elapsed = time.time() - start_time
+        memory_parts = []
+        process_memory_mb = get_process_memory_mb()
+        if process_memory_mb is not None:
+            memory_parts.append(f"RAM: {process_memory_mb:.1f} MB")
+        cuda_memory = get_cuda_memory_summary(device)
+        if cuda_memory is not None:
+            allocated_mb, reserved_mb = cuda_memory
+            memory_parts.append(f"CUDA alloc/res: {allocated_mb:.1f}/{reserved_mb:.1f} MB")
+        memory_status = " | ".join(memory_parts)
+        if memory_status:
+            memory_status = " | " + memory_status
+
         print(f"  Frame {frame_count}/{total_frames} | "
               f"T1: {'ON' if motion_active else 'OFF'} | "
               f"T2: {'ON' if person_detected else 'OFF'} | "
               f"T3: {'ON' if sia_active and not args.skip_tier3 else 'OFF'} | "
-              f"FPS: {frame_count/elapsed:.1f}")
+              f"FPS: {frame_count/elapsed:.1f}"
+              f"{memory_status}")
+
+    if args.debug_frame_no is not None and frame_count >= args.debug_frame_no:
+        print(f"Debug frame limit reached at frame {frame_count}, stopping early.")
+        break
 
 cap.release()
 writer.release()

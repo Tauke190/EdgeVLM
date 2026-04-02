@@ -7,18 +7,26 @@ import torch
 import torch.nn.functional as F
 from torchvision.transforms import v2
 from sia import get_sia, PostProcessViz
-import json
-# from datasets import avatextaug
-
-# Load default actions from JSON file
-with open('gpt/GPT_AVA.json', 'r') as f:
-    gpt_data = json.load(f)
-    DEFAULT_ACTIONS = list(gpt_data.keys())
 
 parser = argparse.ArgumentParser(description="Offline Inference with SIA")
 parser.add_argument("-F", type=str, required=True, help="file path")
 parser.add_argument("-thresh", type=float, default=0.25, help="cosine threshold")
-parser.add_argument("-act", type=lambda s: s.split(","), help="Comma-separated list of actions")
+parser.add_argument(
+    "--act-file",
+    type=str,
+    required=True,
+    help="Path to a text file with one action description per line",
+)
+parser.add_argument(
+    "--debug-frame-no",
+    type=int,
+    help="Process only the first N frames, then stop early for quick debugging",
+)
+parser.add_argument(
+    "--debug",
+    action="store_true",
+    help="Print debug information, including loaded action descriptions",
+)
 parser.add_argument("-color", type=str, default='green', help="color to plot predictions")
 parser.add_argument("-font", type=float, default=0.5, help="font size")
 parser.add_argument("-line", type=int, default=1, help="line thickness")
@@ -63,13 +71,21 @@ print("Model loaded")
 
 tfs = v2.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
-captions = args.act
-if captions == None:
-    captions = DEFAULT_ACTIONS
-else:
-    captions = [act.replace('_', ' ') for act in captions]
+def load_action_descriptions(action_file):
+    with open(action_file, "r", encoding="utf-8") as handle:
+        captions = [line.strip() for line in handle if line.strip()]
+    if not captions:
+        raise ValueError(f"No action descriptions found in {action_file}")
+    return captions
+
+
+captions = load_action_descriptions(args.act_file)
 
 print(f"Actions to detect: {len(captions)}")
+if args.debug:
+    print("Loaded action descriptions:")
+    for idx, caption in enumerate(captions, start=1):
+        print(f"  {idx:02d}. {caption}")
 text_embeds = model.encode_text(captions)
 text_embeds = F.normalize(text_embeds, dim=-1)
 
@@ -171,6 +187,9 @@ while ret:
     end = time.time()
     if frame_count % 30 == 0:
         print(f"Processed {frame_count} frames")
+    if args.debug_frame_no is not None and frame_count >= args.debug_frame_no:
+        print(f"Debug frame limit reached at frame {frame_count}, stopping early.")
+        break
 
 # Process remaining frames in buffer after video ends (drain buffer)
 # Pad with last frame so inference always runs, giving fresh predictions per frame
