@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from torchvision.transforms import v2
 from sia import get_sia, PostProcessViz
 import json
+from contextlib import nullcontext
 
 parser = argparse.ArgumentParser(description="Multi-Tier Surveillance Inference: Motion → Person → Action")
 parser.add_argument("-F", type=str, help="video file path")
@@ -26,6 +27,10 @@ parser.add_argument("--drop-frames", action='store_true',
                     help="drop file frames when processing falls behind live pacing")
 parser.add_argument("--show-preview", action='store_true', help="show a live preview window")
 parser.add_argument("--no-write-output", action='store_true', help="disable output video writing")
+parser.add_argument("--precision", choices=["fp32", "fp16"], default="fp16",
+                    help="precision for Tier 3 action inference")
+parser.add_argument("--no-autocast", action='store_true',
+                    help="disable autocast and run the model directly in the selected precision")
 
 # Tier 1: Motion Detection
 parser.add_argument("--motion-thresh", type=int, default= 1000, help="min contour area for motion")
@@ -148,6 +153,15 @@ person_boxes = []
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"=== Initializing Tier 3: SIA Action Detection (device: {device}) ===")
+use_fp16 = args.precision == "fp16"
+autocast_enabled = use_fp16 and not args.no_autocast
+
+if use_fp16 and device != "cuda":
+    print("⚠ FP16 requested but CUDA is unavailable. Falling back to FP32.")
+    use_fp16 = False
+    autocast_enabled = False
+
+print(f"=== Tier 3 precision: {'fp16' if use_fp16 else 'fp32'} (autocast: {'on' if autocast_enabled else 'off'}) ===")
 
 # Initialize Tier 3 state (may be used even if skip_tier3 is True)
 sia_active = False
@@ -184,11 +198,20 @@ if not args.skip_tier3:
             strict=False,
         )
         model.to(device)
+        if use_fp16 and not autocast_enabled:
+            model.half()
         model.eval()
         print("✓ SIA model loaded")
 
         # Pre-encode text embeddings (one-time)
-        text_embeds = model.encode_text(captions)
+        text_autocast_context = (
+            torch.autocast(device_type="cuda", dtype=torch.float16)
+            if autocast_enabled
+            else nullcontext()
+        )
+        with torch.no_grad():
+            with text_autocast_context:
+                text_embeds = model.encode_text(captions)
         text_embeds = F.normalize(text_embeds, dim=-1)
 
         tfs = v2.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
@@ -375,12 +398,26 @@ while cap.isOpened():
             sia_active = True
             sia_frame_count = 0
 
-            clip_torch = torch.tensor(np.array(buffer)[0:buffer_max_len:buffer_max_len//9]) / 255
+            clip_torch = torch.tensor(np.array(buffer)[0:buffer_max_len:buffer_max_len//9], dtype=torch.float32) / 255
             clip_torch = tfs(clip_torch)
+            clip_torch = clip_torch.unsqueeze(0).to(device)
+            if use_fp16 and not autocast_enabled:
+                clip_torch = clip_torch.half()
 
             with torch.no_grad():
-                outputs = model.encode_vision(clip_torch.unsqueeze(0).to(device))
-                outputs['pred_logits'] = F.normalize(outputs['pred_logits'], dim=-1) @ text_embeds.T
+                inference_autocast_context = (
+                    torch.autocast(device_type="cuda", dtype=torch.float16)
+                    if autocast_enabled
+                    else nullcontext()
+                )
+                with inference_autocast_context:
+                    outputs = model.encode_vision(clip_torch)
+                    similarity_text_embeds = text_embeds.to(dtype=outputs['pred_logits'].dtype)
+                    outputs['pred_logits'] = F.normalize(outputs['pred_logits'], dim=-1) @ similarity_text_embeds.T
+                outputs = {
+                    key: value.float() if torch.is_tensor(value) and value.is_floating_point() else value
+                    for key, value in outputs.items()
+                }
                 result = postprocess(outputs, (frame_height, frame_width), human_conf=0.9, thresh=args.thresh)[0]
                 result['text_labels'] = [[captions[e] for e in ele] for ele in result['labels']]
                 last_boxes = result['boxes']
@@ -564,6 +601,9 @@ if not args.skip_tier3 and sia_flops_per_pass > 0:
 
 print(f"\nProcessing:")
 print(f"  Total frames: {frame_count}")
+print(f"  Tier 3 precision: {'fp16' if use_fp16 else 'fp32'}")
+if not args.skip_tier3:
+    print(f"  Tier 3 autocast: {'enabled' if autocast_enabled else 'disabled'}")
 if args.simulate_live and source_is_file:
     print(f"  Source frames dropped to maintain live pacing: {skipped_frames}")
     if writer is not None:
