@@ -48,6 +48,12 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+
+# Large video files
+*.avi
+*.mp4
+bus.avi
+multitier_bus.mp4
 *.cover
 *.py,cover
 
@@ -117,6 +123,7 @@ utils/
 # Ignore SIA files
 sia/
 
+sample_videos/
 
 # Ignore scripts
 
