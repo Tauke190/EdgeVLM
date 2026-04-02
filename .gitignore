@@ -60,6 +60,8 @@ multitier_bus.mp4
 # Jupyter Notebook
 .ipynb_checkpoints
 
+samples_videos/
+
 # pyenv
 .python-version
 
