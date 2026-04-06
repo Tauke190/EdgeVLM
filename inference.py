@@ -1,4 +1,5 @@
 import os
+import json
 import numpy as np
 import cv2
 import time
@@ -72,20 +73,35 @@ print("Model loaded")
 tfs = v2.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
 def load_action_descriptions(action_file):
-    with open(action_file, "r", encoding="utf-8") as handle:
-        captions = [line.strip() for line in handle if line.strip()]
-    if not captions:
-        raise ValueError(f"No action descriptions found in {action_file}")
-    return captions
+    """Load action descriptions from either JSON or text file.
+    
+    JSON format: {"action_name": "description", ...}
+    Returns: (captions, action_names) where captions are descriptions and action_names are keys
+    """
+    if action_file.endswith('.json'):
+        with open(action_file, "r", encoding="utf-8") as handle:
+            action_dict = json.load(handle)
+        if not action_dict:
+            raise ValueError(f"No actions found in {action_file}")
+        action_names = list(action_dict.keys())
+        captions = list(action_dict.values())
+    else:
+        with open(action_file, "r", encoding="utf-8") as handle:
+            captions = [line.strip() for line in handle if line.strip()]
+        action_names = captions.copy()
+        if not captions:
+            raise ValueError(f"No action descriptions found in {action_file}")
+    
+    return captions, action_names
 
 
-captions = load_action_descriptions(args.act_file)
+captions, action_names = load_action_descriptions(args.act_file)
 
 print(f"Actions to detect: {len(captions)}")
 if args.debug:
     print("Loaded action descriptions:")
-    for idx, caption in enumerate(captions, start=1):
-        print(f"  {idx:02d}. {caption}")
+    for idx, (name, desc) in enumerate(zip(action_names, captions), start=1):
+        print(f"  {idx:02d}. {name}: {desc}")
 text_embeds = model.encode_text(captions)
 text_embeds = F.normalize(text_embeds, dim=-1)
 
@@ -145,7 +161,7 @@ while ret:
             outputs = model.encode_vision(clip_torch.unsqueeze(0).to(device))
             outputs['pred_logits'] = F.normalize(outputs['pred_logits'], dim=-1) @ text_embeds.T
             result = postprocess(outputs, outsize, human_conf=0.9, thresh=args.thresh)[0]
-            result['text_labels'] = [[captions[e] for e in ele] for ele in result['labels']]
+            result['text_labels'] = [[action_names[e] for e in ele] for ele in result['labels']]
             last_boxes = result['boxes']
             last_labels = result['text_labels']
             last_scores = result['scores']
@@ -175,6 +191,7 @@ while ret:
                 act = label[max_idx]
                 sco = score[max_idx]
                 text = act + ' ' + str(round(sco.item(), 2))
+                print(f"Frame {frame_count}: {text}")
                 out_frame = cv2.putText(out_frame, text, (int(box[0])-5, int(box[1])+20), cv2.FONT_HERSHEY_SIMPLEX, font, color, thickness, cv2.LINE_AA)
     else:
         # Before buffer fills, display latest frame without predictions
@@ -210,7 +227,7 @@ while len(plotbuffer) > 0:
             outputs = model.encode_vision(clip_torch.unsqueeze(0).to(device))
             outputs['pred_logits'] = F.normalize(outputs['pred_logits'], dim=-1) @ text_embeds.T
             result = postprocess(outputs, outsize, human_conf=0.9, thresh=args.thresh)[0]
-            result['text_labels'] = [[captions[e] for e in ele] for ele in result['labels']]
+            result['text_labels'] = [[action_names[e] for e in ele] for ele in result['labels']]
             last_boxes = result['boxes']
             last_labels = result['text_labels']
             last_scores = result['scores']
@@ -231,6 +248,7 @@ while len(plotbuffer) > 0:
             if len(label) > 0:
                 max_idx = torch.argmax(score).item()
                 text = label[max_idx] + ' ' + str(round(score[max_idx].item(), 2))
+                print(f"Frame {frame_count}: {text}")
                 out_frame = cv2.putText(out_frame, text, (x1-5, y1+20), cv2.FONT_HERSHEY_SIMPLEX, font, color, int(thickness), cv2.LINE_AA)
     writer.write(out_frame)
 

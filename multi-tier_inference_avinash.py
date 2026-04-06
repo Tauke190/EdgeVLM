@@ -59,6 +59,8 @@ parser.add_argument("--sia-precision", "--action-precision", dest="sia_precision
 parser.add_argument("--action-stride", type=int, default=1,
                     help="run action detection every N eligible frames and reuse labels between runs")
 parser.add_argument("--debug", action='store_true', help="show motion mask and tier states")
+parser.add_argument("--output-dir", type=str, default=".",
+                    help="directory to save the output video file")
 
 args = parser.parse_args()
 
@@ -128,7 +130,10 @@ if args.debug_start_frame is not None:
     cap.set(cv2.CAP_PROP_POS_FRAMES, args.debug_start_frame - 1)
     print(f"Debug start frame: {args.debug_start_frame}")
 
-output_path = 'multitier_' + args.F.split('.')[0] + '.mp4'
+# Create output directory if it doesn't exist
+os.makedirs(args.output_dir, exist_ok=True)
+output_filename = 'multitier_' + args.F.split('.')[0] + '.mp4'
+output_path = os.path.join(args.output_dir, output_filename)
 writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
