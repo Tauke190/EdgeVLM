@@ -148,6 +148,24 @@ def matching_completed_run(existing_run, expected_config, run_dir):
         existing_config.get("precision", expected_config.get("precision")) == expected_config.get("precision"),
         bool(existing_config.get("autocast", expected_config.get("autocast", False)))
         == bool(expected_config.get("autocast", False)),
+        existing_config.get("person_detector", expected_config.get("person_detector"))
+        == expected_config.get("person_detector"),
+        existing_config.get("person_weights", expected_config.get("person_weights"))
+        == expected_config.get("person_weights"),
+        existing_config.get("person_threshold", expected_config.get("person_threshold"))
+        == expected_config.get("person_threshold"),
+        existing_config.get("person_precision", expected_config.get("person_precision"))
+        == expected_config.get("person_precision"),
+        existing_config.get("person_stride", expected_config.get("person_stride"))
+        == expected_config.get("person_stride"),
+        existing_config.get("person_cooldown_frames", expected_config.get("person_cooldown_frames"))
+        == expected_config.get("person_cooldown_frames"),
+        existing_config.get("person_hit_threshold", expected_config.get("person_hit_threshold"))
+        == expected_config.get("person_hit_threshold"),
+        existing_config.get("person_resize_width", expected_config.get("person_resize_width"))
+        == expected_config.get("person_resize_width"),
+        existing_config.get("person_min_box_area", expected_config.get("person_min_box_area"))
+        == expected_config.get("person_min_box_area"),
         existing_metrics.get("frames_read") is not None,
     ]
     if not all(checks):

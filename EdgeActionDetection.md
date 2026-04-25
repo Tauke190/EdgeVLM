@@ -13,6 +13,7 @@ The shared runtime currently supports these pipeline modes:
 
 - `always_on`
 - `motion_only`
+- `person_only`
 
 ### Single Video
 
@@ -53,6 +54,19 @@ Set `pipeline_mode` to `motion_only` in the config or in a copied config file, t
   --output-dir results/runtime/motion_only_smoke
 ```
 
+### Person-Only Smoke Test
+
+Set `pipeline_mode` to `person_only` in the config or in a copied config file, then run:
+
+```bash
+./.venv/bin/python tools/offline_benchmark_runner.py \
+  --config configs/runtime_offline.json \
+  --video-dir sample_videos \
+  --max-frames 120 \
+  --no-render \
+  --output-dir results/runtime/person_only_smoke
+```
+
 ### Useful Offline Options
 
 - `--recursive` to search subdirectories under `--video-dir`
@@ -87,8 +101,9 @@ Per-video files:
 Important note:
 
 - if you pass `--no-render`, the benchmark still runs and writes metrics, but output videos are intentionally disabled
-- `pipeline_mode` currently supports `always_on` and `motion_only`
-- `person_only` and the full motion-person-SiA path are not in the shared runtime yet
+- `pipeline_mode` currently supports `always_on`, `motion_only`, and `person_only`
+- `person_only` now defaults to `YOLOv8n` from `weights/yolov8n.pt`
+- the full combined motion-person-SiA path is not in the shared runtime yet
 
 ## Live Runtime Path
 

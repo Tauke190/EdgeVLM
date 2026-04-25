@@ -4,6 +4,7 @@ from runtime.buffer import SlidingWindowBuffer
 from runtime.inference_core import SIARuntimeCore
 from runtime.metrics import maybe_cuda_synchronize
 from runtime.motion import MotionGate
+from runtime.person import PersonGate
 from runtime.preprocess import build_clip_tensor, build_normalizer, resize_frame
 from runtime.visualize import draw_predictions, resolve_color
 
@@ -16,6 +17,7 @@ class AlwaysOnSIAPipeline:
         self.normalizer = build_normalizer(config.normalize_mean, config.normalize_std)
         self.color = resolve_color(config.color)
         self.motion_gate = None
+        self.person_gate = None
         if config.pipeline_mode == "motion_only":
             self.motion_gate = MotionGate(
                 threshold_area=config.motion_threshold_area,
@@ -23,6 +25,20 @@ class AlwaysOnSIAPipeline:
                 cooldown_frames=config.motion_cooldown_frames,
                 blur_kernel=config.motion_blur_kernel,
                 learning_rate=config.motion_learning_rate,
+            )
+        if config.pipeline_mode == "person_only":
+            self.person_gate = PersonGate(
+                detector=config.person_detector,
+                weights=config.person_weights,
+                threshold=config.person_threshold,
+                precision=config.person_precision,
+                device=config.device,
+                stride=config.person_stride,
+                cooldown_frames=config.person_cooldown_frames,
+                hit_threshold=config.person_hit_threshold,
+                scale=config.person_scale,
+                resize_width=config.person_resize_width,
+                min_box_area=config.person_min_box_area,
             )
 
     def process_frame(self, frame, frame_size):
@@ -36,13 +52,32 @@ class AlwaysOnSIAPipeline:
             "motion_detected": None,
             "motion_active": None,
             "motion_roi": None,
+            "person_detected": None,
+            "person_active": None,
+            "person_boxes": [],
+            "person_scores": [],
+            "person_detector": None,
+            "person_detector_ran": False,
         }
         if self.motion_gate is not None:
             gate_state = self.motion_gate.update(frame)
+            gate_state.update(
+                {
+                    "person_detected": None,
+                    "person_active": None,
+                    "person_boxes": [],
+                    "person_scores": [],
+                    "person_detector": None,
+                    "person_detector_ran": False,
+                }
+            )
+        if self.person_gate is not None:
+            gate_state.update(self.person_gate.update(frame))
 
         if not self.buffer.ready():
             return {
                 "active": False,
+                "output_ready": False,
                 "rendered_frame": frame.copy(),
                 "detections": 0,
                 "gate_state": gate_state,
@@ -61,6 +96,25 @@ class AlwaysOnSIAPipeline:
         if self.config.pipeline_mode == "motion_only" and not gate_state["motion_active"]:
             return {
                 "active": False,
+                "output_ready": True,
+                "rendered_frame": self.buffer.render_frame(),
+                "detections": 0,
+                "gate_state": gate_state,
+                "timings": {
+                    "preprocess_s": preprocess_time,
+                    "inference_s": 0.0,
+                    "postprocess_s": 0.0,
+                    "postprocess_filter_s": 0.0,
+                    "postprocess_nms_s": 0.0,
+                    "postprocess_threshold_s": 0.0,
+                    "label_decode_s": 0.0,
+                    "render_s": 0.0,
+                },
+            }
+        if self.config.pipeline_mode == "person_only" and not gate_state["person_active"]:
+            return {
+                "active": False,
+                "output_ready": True,
                 "rendered_frame": self.buffer.render_frame(),
                 "detections": 0,
                 "gate_state": gate_state,
@@ -100,6 +154,7 @@ class AlwaysOnSIAPipeline:
         render_time = time.perf_counter() - render_start
         return {
             "active": True,
+            "output_ready": True,
             "rendered_frame": rendered_frame,
             "detections": inference_result["num_detections"],
             "boxes": inference_result["boxes"],

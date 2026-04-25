@@ -80,13 +80,6 @@ def run_offline_runtime(
         ensure_dir(run_dir)
     output_video_path = run_dir / config.output_video_name
     writer = None
-    if config.render_enabled:
-        writer = cv2.VideoWriter(
-            str(output_video_path),
-            cv2.VideoWriter_fourcc(*config.video_codec),
-            writer_fps,
-            (frame_width, frame_height),
-        )
 
     pipeline = AlwaysOnSIAPipeline(config)
     collector = RuntimeMetricsCollector()
@@ -130,7 +123,14 @@ def run_offline_runtime(
                 active_frames += 1
                 clips_processed += 1
             render_time = result["timings"]["render_s"]
-            if writer is not None and result["active"]:
+            if config.render_enabled and result["output_ready"]:
+                if writer is None:
+                    writer = cv2.VideoWriter(
+                        str(output_video_path),
+                        cv2.VideoWriter_fourcc(*config.video_codec),
+                        writer_fps,
+                        (frame_width, frame_height),
+                    )
                 write_start = time.perf_counter()
                 writer.write(result["rendered_frame"])
                 render_time += time.perf_counter() - write_start
@@ -246,7 +246,7 @@ def run_offline_runtime(
             f"Loop mean ms: {metrics['timings']['loop']['mean_ms']}",
             f"Active loop mean ms: {metrics['timings']['active_loop']['mean_ms']}",
             f"Active loop p95 ms: {metrics['timings']['active_loop']['p95_ms']}",
-            f"Output video: {output_video_path if writer is not None else 'disabled'}",
+            f"Output video: {output_video_path if frames_written > 0 else 'not_generated'}",
         ],
     )
     if progress_callback is not None:
@@ -259,14 +259,14 @@ def run_offline_runtime(
                 "clips_processed": clips_processed,
                 "frames_written": frames_written,
                 "effective_fps": metrics["effective_fps"],
-                "output_video_path": str(output_video_path) if writer is not None else None,
+                "output_video_path": str(output_video_path) if frames_written > 0 else None,
             }
         )
     return {
         "run_dir": run_dir,
         "metrics": metrics,
         "config": config,
-        "output_video_path": output_video_path if writer is not None else None,
+        "output_video_path": output_video_path if frames_written > 0 else None,
     }
 
 
