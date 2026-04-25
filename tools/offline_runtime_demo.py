@@ -356,6 +356,8 @@ def run_offline_runtime(
             writer.release()
 
     elapsed_s = time.perf_counter() - start_wall
+    active_loop_values = collector.series["active_loop"]
+    active_loop_total_s = sum(active_loop_values)
     metrics = {
         "mode": config.mode,
         "pipeline_mode": config.pipeline_mode,
@@ -391,7 +393,11 @@ def run_offline_runtime(
         "motion_to_sia_latency_frames": activation_latency_frames,
         "scheduler_state_counts": dict(sorted(scheduler_state_counts.items())),
         "elapsed_s": round(elapsed_s, 3),
-        "effective_fps": round(clips_processed / elapsed_s, 3) if elapsed_s > 0 else None,
+        "effective_fps": round(frame_count / elapsed_s, 3) if elapsed_s > 0 else None,
+        "effective_input_fps": round(frame_count / elapsed_s, 3) if elapsed_s > 0 else None,
+        "effective_active_fps": round(active_frames / active_loop_total_s, 3)
+        if active_loop_total_s > 0
+        else None,
         "source_fps": round(source_fps, 3) if source_fps and source_fps > 0 else None,
         "render_enabled": config.render_enabled,
         "monitor_source": system_monitor.source,
@@ -448,7 +454,8 @@ def run_offline_runtime(
             f"Motion-to-SiA latency frames: {activation_latency_frames}",
             f"Scheduler state counts: {dict(sorted(scheduler_state_counts.items()))}",
             f"Elapsed seconds: {metrics['elapsed_s']}",
-            f"Effective FPS: {metrics['effective_fps']}",
+            f"Effective input FPS: {metrics['effective_input_fps']}",
+            f"Effective active FPS: {metrics['effective_active_fps']}",
             f"Inference mean ms: {metrics['timings']['inference']['mean_ms']}",
             f"Inference p95 ms: {metrics['timings']['inference']['p95_ms']}",
             f"Postprocess mean ms: {metrics['timings']['postprocess']['mean_ms']}",
