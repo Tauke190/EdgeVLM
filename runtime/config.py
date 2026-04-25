@@ -8,6 +8,8 @@ class RuntimeConfig:
     weights_path: str
     actions_json: str
     pipeline_mode: str = "always_on"
+    backend_name: str = "pytorch"
+    optimization_label: str | None = None
     device: str = "cuda"
     precision: str = "fp32"
     autocast: bool = False
@@ -76,6 +78,8 @@ class RuntimeConfig:
             weights_path=payload["weights_path"],
             actions_json=payload["actions_json"],
             pipeline_mode=pipeline_mode,
+            backend_name=payload.get("backend_name", "pytorch"),
+            optimization_label=payload.get("optimization_label"),
             device=payload.get("device", "cuda"),
             precision=payload.get("precision", "fp32"),
             autocast=bool(payload.get("autocast", payload.get("precision", "fp32") == "fp16")),

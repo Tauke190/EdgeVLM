@@ -248,3 +248,33 @@ Important note:
 - the offline path is the main repeatable evaluation path for group benchmarking
 - the live path is mainly for deployment smoke testing and qualitative camera validation
 - the offline path supports `.mp4`, `.avi`, `.mov`, `.mkv`, `.webm`, and `.m4v`
+
+## Experiment Matrix
+
+Use the experiment matrix runner when you want one summary table that records:
+
+- gate permutation
+- source mode
+- precision or optimization variant
+- timing deltas against an `always_on + fp32` baseline
+
+### Offline + Live-Replay Matrix
+
+```bash
+./.venv/bin/python tools/runtime_experiment_matrix.py \
+  --video sample_videos/hit.mp4 \
+  --max-frames 60 \
+  --no-render \
+  --output-dir results/runtime/experiment_matrix_smoke
+```
+
+This writes:
+
+- `matrix_summary.csv`
+- `matrix_summary.json`
+- `runs/`
+
+Important note:
+
+- the matrix summary records `backend_name` and `optimization_label` so future INT8 results can be compared in the same format as current FP32 and FP16 runs
+- delta columns are computed against the `always_on + fp32` baseline for each source mode and backend
