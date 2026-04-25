@@ -29,6 +29,8 @@ class RuntimeConfig:
     output_video_name: str = "runtime_output.mp4"
     output_fps: float = 25.0
     video_codec: str = "mp4v"
+    sync_cuda_timing: bool = True
+    system_metrics_interval_s: float = 1.0
     render_enabled: bool = True
     show_preview: bool = False
     video_path: str | None = None
@@ -67,6 +69,8 @@ class RuntimeConfig:
             output_video_name=payload.get("output_video_name", "runtime_output.mp4"),
             output_fps=float(payload.get("output_fps", 25.0)),
             video_codec=payload.get("video_codec", "mp4v"),
+            sync_cuda_timing=bool(payload.get("sync_cuda_timing", True)),
+            system_metrics_interval_s=float(payload.get("system_metrics_interval_s", 1.0)),
             render_enabled=bool(payload.get("render_enabled", True)),
             show_preview=bool(payload.get("show_preview", False)),
             video_path=payload.get("video_path"),

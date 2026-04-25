@@ -1,10 +1,12 @@
 from contextlib import nullcontext
 import json
+import time
 
 import torch
 import torch.nn.functional as F
 
 from sia import get_sia
+from runtime.metrics import maybe_cuda_synchronize
 from runtime.postprocess import RuntimePostProcessor
 
 
@@ -63,6 +65,17 @@ class SIARuntimeCore:
         self.postprocess = RuntimePostProcessor(config.threshold)
 
     def infer_clip(self, clip_tensor, frame_size):
+        timings = {
+            "inference_s": 0.0,
+            "postprocess_s": 0.0,
+            "postprocess_filter_s": 0.0,
+            "postprocess_nms_s": 0.0,
+            "postprocess_threshold_s": 0.0,
+            "label_decode_s": 0.0,
+        }
+
+        maybe_cuda_synchronize(self.device, self.config.sync_cuda_timing)
+        inference_start = time.perf_counter()
         with torch.no_grad():
             inference_context = (
                 torch.autocast(device_type="cuda", dtype=torch.float16)
@@ -77,17 +90,33 @@ class SIARuntimeCore:
                 key: value.float() if torch.is_tensor(value) and value.is_floating_point() else value
                 for key, value in outputs.items()
             }
+        maybe_cuda_synchronize(self.device, self.config.sync_cuda_timing)
+        timings["inference_s"] = time.perf_counter() - inference_start
 
-        result = self.postprocess(outputs, frame_size)
+        maybe_cuda_synchronize(self.device, self.config.sync_cuda_timing)
+        postprocess_start = time.perf_counter()
+        result = self.postprocess(outputs, frame_size, return_stage_timings=True)
+        maybe_cuda_synchronize(self.device, self.config.sync_cuda_timing)
+        timings["postprocess_s"] = time.perf_counter() - postprocess_start
+        if result["stage_timings"] is not None:
+            timings["postprocess_filter_s"] = result["stage_timings"]["human_filter_s"]
+            timings["postprocess_nms_s"] = result["stage_timings"]["nms_s"]
+            timings["postprocess_threshold_s"] = result["stage_timings"]["threshold_s"]
+
+        maybe_cuda_synchronize(self.device, self.config.sync_cuda_timing)
+        label_decode_start = time.perf_counter()
         labels, scores = decode_text_labels(
             result["label_ids"],
             result["scores"],
             self.captions,
             self.config.top_k_labels,
         )
+        maybe_cuda_synchronize(self.device, self.config.sync_cuda_timing)
+        timings["label_decode_s"] = time.perf_counter() - label_decode_start
         return {
             "boxes": result["boxes"],
             "labels": labels,
             "scores": scores,
             "num_detections": len(result["boxes"]),
+            "timings": timings,
         }
