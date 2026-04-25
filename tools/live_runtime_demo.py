@@ -77,6 +77,8 @@ def main():
     frame_count = 0
     active_frames = 0
     first_frame_logged = False
+    writer_frames = 0
+    first_recorded_frame_logged = False
 
     try:
         while True:
@@ -97,7 +99,17 @@ def main():
             if result["active"]:
                 active_frames += 1
             if writer is not None:
-                writer.write(result["rendered_frame"])
+                target_frames = max(1, int((elapsed_so_far if elapsed_so_far > 0 else 0.0) * config.output_fps))
+                while writer_frames < target_frames:
+                    writer.write(result["rendered_frame"])
+                    writer_frames += 1
+                    if not first_recorded_frame_logged:
+                        print(
+                            "Recording started. "
+                            f"Output FPS target: {config.output_fps}. "
+                            f"First recorded output frame index: {writer_frames}"
+                        )
+                        first_recorded_frame_logged = True
             if config.show_preview:
                 cv2.imshow("SiA Live Runtime", result["rendered_frame"])
                 if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -117,10 +129,15 @@ def main():
         "git_commit": infer_git_commit(),
         "frames_read": frame_count,
         "active_frames": active_frames,
+        "frames_written": writer_frames,
         "elapsed_s": round(elapsed_s, 3),
         "effective_fps": round(frame_count / elapsed_s, 3) if elapsed_s > 0 else None,
         "render_enabled": config.render_enabled,
         "show_preview": config.show_preview,
+        "output_fps": config.output_fps if writer is not None else None,
+        "output_duration_s": round(writer_frames / config.output_fps, 3)
+        if writer is not None and config.output_fps > 0
+        else None,
     }
     write_json(run_dir / "config.json", raw_config)
     write_json(run_dir / "metrics.json", metrics)
@@ -133,8 +150,11 @@ def main():
             f"Weights: {config.weights_path}",
             f"Frames read: {frame_count}",
             f"Active frames: {active_frames}",
+            f"Frames written: {writer_frames}",
             f"Elapsed seconds: {metrics['elapsed_s']}",
             f"Effective FPS: {metrics['effective_fps']}",
+            f"Output FPS: {metrics['output_fps']}",
+            f"Output duration seconds: {metrics['output_duration_s']}",
             f"Output video: {output_video_path if writer is not None else 'disabled'}",
         ],
     )
