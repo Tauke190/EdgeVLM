@@ -41,6 +41,7 @@ The offline benchmark harness can run:
 - `--glob '*.avi'` or `--glob '*.mp4'` to restrict which files are picked up
 - `--output-dir results/runtime/my_suite` to force a specific suite directory
 - `--weights path/to/checkpoint.pt` to override the model checkpoint
+- `--resume` to skip videos that already have a matching completed run in the suite directory
 - `--progress-every 60` to control how often frame progress is printed
 - `--continue-on-error` to keep running remaining videos if one input fails
 

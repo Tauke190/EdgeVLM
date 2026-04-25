@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.baseline_utils import ensure_dir, timestamp_slug, write_csv, write_json
+from tools.baseline_utils import ensure_dir, load_json, timestamp_slug, write_csv, write_json
 from tools.offline_runtime_demo import build_raw_config, run_offline_runtime
 
 
@@ -38,6 +38,11 @@ def parse_args():
     parser.add_argument("--output-dir", help="Optional explicit suite output directory.")
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from each source video.")
     parser.add_argument("--no-render", action="store_true", help="Disable output video writing.")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip videos that already have a matching completed run in the suite output directory.",
+    )
     parser.add_argument(
         "--progress-every",
         type=int,
@@ -112,6 +117,64 @@ def progress_label(frame_index, total_frames, max_frames):
     return str(frame_index)
 
 
+def output_video_path_for_run(run_dir, config_payload):
+    output_name = config_payload.get("output_video_name", "runtime_offline.mp4")
+    return Path(run_dir) / output_name
+
+
+def load_existing_run(run_dir):
+    run_dir = Path(run_dir)
+    config_path = run_dir / "config.json"
+    metrics_path = run_dir / "metrics.json"
+    if not config_path.is_file() or not metrics_path.is_file():
+        return None
+    return {
+        "config": load_json(config_path),
+        "metrics": load_json(metrics_path),
+    }
+
+
+def matching_completed_run(existing_run, expected_config, run_dir):
+    if existing_run is None:
+        return False
+    existing_config = existing_run["config"]
+    existing_metrics = existing_run["metrics"]
+    checks = [
+        existing_config.get("video_path") == expected_config.get("video_path"),
+        existing_config.get("weights_path") == expected_config.get("weights_path"),
+        existing_config.get("max_frames") == expected_config.get("max_frames"),
+        bool(existing_config.get("render_enabled", True)) == bool(expected_config.get("render_enabled", True)),
+        existing_config.get("precision", expected_config.get("precision")) == expected_config.get("precision"),
+        bool(existing_config.get("autocast", expected_config.get("autocast", False)))
+        == bool(expected_config.get("autocast", False)),
+        existing_metrics.get("frames_read") is not None,
+    ]
+    if not all(checks):
+        return False
+    if expected_config.get("render_enabled", True):
+        return output_video_path_for_run(run_dir, expected_config).is_file()
+    return True
+
+
+def summary_row(video_path, run_dir, metrics, output_video_path, status="ok", error=""):
+    return {
+        "video_path": str(video_path),
+        "run_dir": str(run_dir),
+        "frames_read": metrics.get("frames_read"),
+        "active_frames": metrics.get("active_frames"),
+        "clips_processed": metrics.get("clips_processed"),
+        "frames_written": metrics.get("frames_written"),
+        "effective_fps": metrics.get("effective_fps"),
+        "inference_mean_ms": metrics.get("timings", {}).get("inference", {}).get("mean_ms"),
+        "postprocess_mean_ms": metrics.get("timings", {}).get("postprocess", {}).get("mean_ms"),
+        "render_mean_ms": metrics.get("timings", {}).get("render", {}).get("mean_ms"),
+        "active_loop_mean_ms": metrics.get("timings", {}).get("active_loop", {}).get("mean_ms"),
+        "output_video": str(output_video_path) if output_video_path else "disabled",
+        "status": status,
+        "error": error,
+    }
+
+
 def main():
     args = parse_args()
     raw_config = build_raw_config(args)
@@ -175,6 +238,26 @@ def main():
                 )
 
         try:
+            existing_run = load_existing_run(run_dir) if args.resume else None
+            if matching_completed_run(existing_run, video_config, run_dir):
+                output_video = (
+                    output_video_path_for_run(run_dir, video_config)
+                    if video_config.get("render_enabled", True)
+                    else None
+                )
+                print(f"  Resume mode: skipping existing completed run in {run_dir}")
+                rows.append(
+                    summary_row(
+                        video_path,
+                        run_dir,
+                        existing_run["metrics"],
+                        output_video,
+                        status="skipped_existing",
+                        error="",
+                    )
+                )
+                continue
+
             result = run_offline_runtime(
                 video_config,
                 invoked_command,
@@ -182,24 +265,15 @@ def main():
                 run_dir=run_dir,
                 progress_callback=progress_callback,
             )
-            metrics = result["metrics"]
             rows.append(
-                {
-                    "video_path": str(video_path),
-                    "run_dir": str(result["run_dir"]),
-                    "frames_read": metrics["frames_read"],
-                    "active_frames": metrics["active_frames"],
-                    "clips_processed": metrics["clips_processed"],
-                    "frames_written": metrics["frames_written"],
-                    "effective_fps": metrics["effective_fps"],
-                    "inference_mean_ms": metrics["timings"]["inference"]["mean_ms"],
-                    "postprocess_mean_ms": metrics["timings"]["postprocess"]["mean_ms"],
-                    "render_mean_ms": metrics["timings"]["render"]["mean_ms"],
-                    "active_loop_mean_ms": metrics["timings"]["active_loop"]["mean_ms"],
-                    "output_video": str(result["output_video_path"]) if result["output_video_path"] else "disabled",
-                    "status": "ok",
-                    "error": "",
-                }
+                summary_row(
+                    video_path,
+                    result["run_dir"],
+                    result["metrics"],
+                    result["output_video_path"],
+                    status="ok",
+                    error="",
+                )
             )
         except Exception as exc:
             failures.append({"video_path": str(video_path), "error": str(exc)})
@@ -228,7 +302,8 @@ def main():
         "suite_dir": str(suite_dir),
         "invoked_command": invoked_command,
         "video_count_requested": len(video_paths),
-        "video_count_completed": sum(row["status"] == "ok" for row in rows),
+        "video_count_completed": sum(row["status"] in {"ok", "skipped_existing"} for row in rows),
+        "video_count_skipped": sum(row["status"] == "skipped_existing" for row in rows),
         "video_count_failed": sum(row["status"] == "error" for row in rows),
         "failures": failures,
         "videos": rows,
