@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 import shlex
 import sys
+import time
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,12 @@ def parse_args():
     parser.add_argument("--output-dir", help="Optional explicit suite output directory.")
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from each source video.")
     parser.add_argument("--no-render", action="store_true", help="Disable output video writing.")
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=60,
+        help="Print progress every N processed frames for each video. Default: 60",
+    )
     parser.add_argument(
         "--continue-on-error",
         action="store_true",
@@ -95,6 +102,16 @@ def suite_output_dir(args, raw_config):
     return path
 
 
+def progress_label(frame_index, total_frames, max_frames):
+    if max_frames:
+        effective_total = min(total_frames, max_frames) if total_frames else max_frames
+    else:
+        effective_total = total_frames
+    if effective_total:
+        return f"{frame_index}/{effective_total}"
+    return str(frame_index)
+
+
 def main():
     args = parse_args()
     raw_config = build_raw_config(args)
@@ -110,12 +127,60 @@ def main():
         video_config = dict(raw_config)
         video_config["video_path"] = str(video_path)
         print(f"[{index}/{len(video_paths)}] Running offline benchmark for: {video_path}")
+        if args.no_render:
+            print("  Rendering disabled. Output video will not be written for this run.")
+
+        last_progress_time = 0.0
+
+        def progress_callback(payload):
+            nonlocal last_progress_time
+            event = payload["event"]
+            if event == "start":
+                total_hint = payload["frame_count_hint"]
+                max_frames = payload["max_frames"]
+                total_msg = f", source frames={total_hint}" if total_hint else ""
+                max_msg = f", max_frames={max_frames}" if max_frames else ""
+                print(f"  Run directory: {payload['run_dir']}{total_msg}{max_msg}")
+                return
+            if event == "frame":
+                frame_index = payload["frame_index"]
+                should_print = frame_index == 1 or frame_index % max(1, args.progress_every) == 0
+                now = time.perf_counter()
+                if not should_print and now - last_progress_time < 10.0:
+                    return
+                last_progress_time = now
+                label = progress_label(
+                    frame_index,
+                    payload["frame_count_hint"],
+                    payload["max_frames"],
+                )
+                print(
+                    "  Progress: "
+                    f"frame {label}, "
+                    f"active_frames={payload['active_frames']}, "
+                    f"clips_processed={payload['clips_processed']}, "
+                    f"frames_written={payload['frames_written']}"
+                )
+                return
+            if event == "complete":
+                output_video = payload["output_video_path"] or "disabled"
+                print(
+                    "  Completed: "
+                    f"frames_read={payload['frames_read']}, "
+                    f"active_frames={payload['active_frames']}, "
+                    f"clips_processed={payload['clips_processed']}, "
+                    f"frames_written={payload['frames_written']}, "
+                    f"effective_fps={payload['effective_fps']}, "
+                    f"output_video={output_video}"
+                )
+
         try:
             result = run_offline_runtime(
                 video_config,
                 invoked_command,
                 run_name=f"offline_runtime_demo_{video_label}",
                 run_dir=run_dir,
+                progress_callback=progress_callback,
             )
             metrics = result["metrics"]
             rows.append(

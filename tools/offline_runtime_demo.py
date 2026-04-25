@@ -57,13 +57,20 @@ def build_raw_config(args):
     return raw_config
 
 
-def run_offline_runtime(raw_config, invoked_command, run_name="offline_runtime_demo", run_dir=None):
+def run_offline_runtime(
+    raw_config,
+    invoked_command,
+    run_name="offline_runtime_demo",
+    run_dir=None,
+    progress_callback=None,
+):
     config = RuntimeConfig.from_dict(raw_config)
 
     capture = open_capture(config)
     frame_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     source_fps = capture.get(cv2.CAP_PROP_FPS)
+    source_frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     writer_fps = source_fps if source_fps and source_fps > 0 else config.output_fps
 
     if run_dir is None:
@@ -96,6 +103,17 @@ def run_offline_runtime(raw_config, invoked_command, run_name="offline_runtime_d
     clips_processed = 0
 
     try:
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "event": "start",
+                    "video_path": config.video_path,
+                    "run_dir": str(run_dir),
+                    "frame_count_hint": source_frame_count if source_frame_count > 0 else None,
+                    "max_frames": config.max_frames,
+                    "render_enabled": config.render_enabled,
+                }
+            )
         while True:
             loop_start = time.perf_counter()
             capture_start = time.perf_counter()
@@ -134,6 +152,18 @@ def run_offline_runtime(raw_config, invoked_command, run_name="offline_runtime_d
                 loop_s=loop_time,
                 detections=result["detections"],
             )
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "event": "frame",
+                        "frame_index": frame_count,
+                        "active_frames": active_frames,
+                        "clips_processed": clips_processed,
+                        "frames_written": frames_written,
+                        "frame_count_hint": source_frame_count if source_frame_count > 0 else None,
+                        "max_frames": config.max_frames,
+                    }
+                )
     finally:
         system_monitor.stop()
         capture.release()
@@ -216,6 +246,19 @@ def run_offline_runtime(raw_config, invoked_command, run_name="offline_runtime_d
             f"Output video: {output_video_path if writer is not None else 'disabled'}",
         ],
     )
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "event": "complete",
+                "run_dir": str(run_dir),
+                "frames_read": frame_count,
+                "active_frames": active_frames,
+                "clips_processed": clips_processed,
+                "frames_written": frames_written,
+                "effective_fps": metrics["effective_fps"],
+                "output_video_path": str(output_video_path) if writer is not None else None,
+            }
+        )
     return {
         "run_dir": run_dir,
         "metrics": metrics,
