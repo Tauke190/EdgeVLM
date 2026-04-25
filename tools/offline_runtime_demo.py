@@ -39,6 +39,7 @@ EVENT_LOG_FIELDNAMES = [
     "person_active",
     "sia_active",
     "person_detector_ran",
+    "sia_trigger_reason",
     "notes",
 ]
 
@@ -123,6 +124,7 @@ def run_offline_runtime(
     person_event_count = 0
     sia_activation_count = 0
     sia_stride_wait_frames = 0
+    sia_trigger_reason_counts = Counter()
 
     try:
         if progress_callback is not None:
@@ -166,6 +168,9 @@ def run_offline_runtime(
             motion_active = bool(result["gate_state"].get("motion_active"))
             person_active = bool(result["gate_state"].get("person_active"))
             sia_active = bool(result["active"])
+            sia_trigger_reason = result.get("sia_trigger_reason")
+            if sia_trigger_reason:
+                sia_trigger_reason_counts[sia_trigger_reason] += 1
 
             if scheduler_state != prev_scheduler_state:
                 event_rows.append(
@@ -178,6 +183,7 @@ def run_offline_runtime(
                         "person_active": person_active,
                         "sia_active": sia_active,
                         "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "sia_trigger_reason": sia_trigger_reason or "",
                         "notes": "",
                     }
                 )
@@ -196,6 +202,7 @@ def run_offline_runtime(
                         "person_active": person_active,
                         "sia_active": sia_active,
                         "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "sia_trigger_reason": "",
                         "notes": "",
                     }
                 )
@@ -210,6 +217,7 @@ def run_offline_runtime(
                         "person_active": person_active,
                         "sia_active": sia_active,
                         "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "sia_trigger_reason": "",
                         "notes": "",
                     }
                 )
@@ -225,6 +233,7 @@ def run_offline_runtime(
                         "person_active": True,
                         "sia_active": sia_active,
                         "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "sia_trigger_reason": "",
                         "notes": "",
                     }
                 )
@@ -239,6 +248,7 @@ def run_offline_runtime(
                         "person_active": False,
                         "sia_active": sia_active,
                         "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "sia_trigger_reason": "",
                         "notes": "",
                     }
                 )
@@ -259,6 +269,7 @@ def run_offline_runtime(
                         "person_active": person_active,
                         "sia_active": True,
                         "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "sia_trigger_reason": sia_trigger_reason or "",
                         "notes": latency_note,
                     }
                 )
@@ -273,6 +284,7 @@ def run_offline_runtime(
                         "person_active": person_active,
                         "sia_active": False,
                         "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "sia_trigger_reason": "",
                         "notes": "",
                     }
                 )
@@ -287,6 +299,7 @@ def run_offline_runtime(
                         "person_active": person_active,
                         "sia_active": sia_active,
                         "person_detector_ran": True,
+                        "sia_trigger_reason": "",
                         "notes": "",
                     }
                 )
@@ -372,6 +385,7 @@ def run_offline_runtime(
         "person_event_count": person_event_count,
         "sia_activation_count": sia_activation_count,
         "sia_stride_wait_frames": sia_stride_wait_frames,
+        "sia_trigger_reason_counts": dict(sorted(sia_trigger_reason_counts.items())),
         "motion_to_sia_latency_frames": activation_latency_frames,
         "scheduler_state_counts": dict(sorted(scheduler_state_counts.items())),
         "elapsed_s": round(elapsed_s, 3),
@@ -424,6 +438,7 @@ def run_offline_runtime(
             f"Person events: {person_event_count}",
             f"SiA activations: {sia_activation_count}",
             f"SiA stride-wait frames: {sia_stride_wait_frames}",
+            f"SiA trigger reason counts: {dict(sorted(sia_trigger_reason_counts.items()))}",
             f"Motion-to-SiA latency frames: {activation_latency_frames}",
             f"Scheduler state counts: {dict(sorted(scheduler_state_counts.items()))}",
             f"Elapsed seconds: {metrics['elapsed_s']}",

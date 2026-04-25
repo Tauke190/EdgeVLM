@@ -43,6 +43,9 @@ class AlwaysOnSIAPipeline:
                 min_box_area=config.person_min_box_area,
             )
         self.last_sia_push_index = None
+        self.prev_motion_active = False
+        self.prev_person_active = False
+        self.prev_sia_active = False
 
     def _timing_stub(self, preprocess_time):
         return {
@@ -56,11 +59,13 @@ class AlwaysOnSIAPipeline:
             "render_s": 0.0,
         }
 
-    def _scheduler_state(self, buffer_ready, gate_state, active, stride_wait=False):
+    def _scheduler_state(self, buffer_ready, gate_state, active, stride_wait=False, cooldown=False):
         if active:
             return "sia_active"
         if stride_wait:
             return "sia_stride_wait"
+        if cooldown:
+            return "cooldown"
 
         if not buffer_ready:
             if self.config.pipeline_mode == "always_on":
@@ -83,13 +88,39 @@ class AlwaysOnSIAPipeline:
             return "idle"
         return "idle"
 
-    def _can_run_sia(self):
+    def _sia_trigger_reason(self, gate_state):
         if self.config.pipeline_mode != "motion_person_sia":
-            return True
+            return "always_allowed"
+
+        motion_rising = bool(gate_state.get("motion_rising"))
+        person_rising = bool(gate_state.get("person_rising"))
+        if motion_rising and self.config.sia_retrigger_on_motion_edge:
+            return "motion_edge"
+        if person_rising and self.config.sia_retrigger_on_person_edge:
+            return "person_edge"
         if self.last_sia_push_index is None:
-            return True
+            return "initial_activation"
         pushed_since_last_sia = self.buffer.total_pushed - self.last_sia_push_index
-        return pushed_since_last_sia >= self.config.sia_min_new_frames
+        if pushed_since_last_sia >= self.config.sia_min_new_frames:
+            return "min_new_frames"
+        return None
+
+    def _cooldown_active(self, gate_state):
+        motion_active = bool(gate_state.get("motion_active"))
+        person_active = bool(gate_state.get("person_active"))
+        if self.config.pipeline_mode == "motion_only":
+            return not motion_active and self.prev_motion_active
+        if self.config.pipeline_mode == "person_only":
+            return not person_active and self.prev_person_active
+        if self.config.pipeline_mode == "motion_person_sia":
+            return not motion_active and (self.prev_motion_active or self.prev_person_active or self.prev_sia_active)
+        return False
+
+    def _finalize_result(self, result, gate_state, active):
+        self.prev_motion_active = bool(gate_state.get("motion_active"))
+        self.prev_person_active = bool(gate_state.get("person_active"))
+        self.prev_sia_active = bool(active)
+        return result
 
     def process_frame(self, frame, frame_size):
         preprocess_start = time.perf_counter()
@@ -116,71 +147,97 @@ class AlwaysOnSIAPipeline:
             if self.config.pipeline_mode == "motion_person_sia":
                 person_gate_enabled = bool(gate_state["motion_active"])
             gate_state.update(self.person_gate.update(frame, enabled=person_gate_enabled))
+        gate_state["motion_rising"] = bool(gate_state.get("motion_active")) and not self.prev_motion_active
+        gate_state["person_rising"] = bool(gate_state.get("person_active")) and not self.prev_person_active
 
         buffer_ready = self.buffer.ready()
+        cooldown_active = self._cooldown_active(gate_state)
 
         if not buffer_ready:
             scheduler_state = self._scheduler_state(buffer_ready, gate_state, active=False)
-            return {
+            return self._finalize_result({
                 "active": False,
                 "output_ready": False,
                 "scheduler_state": scheduler_state,
+                "sia_trigger_reason": None,
                 "rendered_frame": frame.copy(),
                 "detections": 0,
                 "gate_state": gate_state,
                 "timings": self._timing_stub(preprocess_time),
-            }
+            }, gate_state, active=False)
 
         if self.config.pipeline_mode == "motion_only" and not gate_state["motion_active"]:
-            scheduler_state = self._scheduler_state(buffer_ready, gate_state, active=False)
-            return {
+            scheduler_state = self._scheduler_state(
+                buffer_ready,
+                gate_state,
+                active=False,
+                cooldown=cooldown_active,
+            )
+            return self._finalize_result({
                 "active": False,
                 "output_ready": True,
                 "scheduler_state": scheduler_state,
+                "sia_trigger_reason": None,
                 "rendered_frame": self.buffer.render_frame(),
                 "detections": 0,
                 "gate_state": gate_state,
                 "timings": self._timing_stub(preprocess_time),
-            }
+            }, gate_state, active=False)
         if self.config.pipeline_mode == "person_only" and not gate_state["person_active"]:
-            scheduler_state = self._scheduler_state(buffer_ready, gate_state, active=False)
-            return {
+            scheduler_state = self._scheduler_state(
+                buffer_ready,
+                gate_state,
+                active=False,
+                cooldown=cooldown_active,
+            )
+            return self._finalize_result({
                 "active": False,
                 "output_ready": True,
                 "scheduler_state": scheduler_state,
+                "sia_trigger_reason": None,
                 "rendered_frame": self.buffer.render_frame(),
                 "detections": 0,
                 "gate_state": gate_state,
                 "timings": self._timing_stub(preprocess_time),
-            }
+            }, gate_state, active=False)
         if self.config.pipeline_mode == "motion_person_sia":
             if not gate_state["motion_active"] or not gate_state["person_active"]:
-                scheduler_state = self._scheduler_state(buffer_ready, gate_state, active=False)
-                return {
+                scheduler_state = self._scheduler_state(
+                    buffer_ready,
+                    gate_state,
+                    active=False,
+                    cooldown=cooldown_active,
+                )
+                return self._finalize_result({
                     "active": False,
                     "output_ready": True,
                     "scheduler_state": scheduler_state,
+                    "sia_trigger_reason": None,
                     "rendered_frame": self.buffer.render_frame(),
                     "detections": 0,
                     "gate_state": gate_state,
                     "timings": self._timing_stub(preprocess_time),
-                }
-            if not self._can_run_sia():
+                }, gate_state, active=False)
+            trigger_reason = self._sia_trigger_reason(gate_state)
+            if trigger_reason is None:
                 scheduler_state = self._scheduler_state(
                     buffer_ready,
                     gate_state,
                     active=False,
                     stride_wait=True,
                 )
-                return {
+                return self._finalize_result({
                     "active": False,
                     "output_ready": True,
                     "scheduler_state": scheduler_state,
+                    "sia_trigger_reason": None,
                     "rendered_frame": self.buffer.render_frame(),
                     "detections": 0,
                     "gate_state": gate_state,
                     "timings": self._timing_stub(preprocess_time),
-                }
+                }, gate_state, active=False)
+        else:
+            trigger_reason = "always_allowed"
 
         clip_tensor = build_clip_tensor(
             self.buffer.sampled_clip(),
@@ -205,10 +262,11 @@ class AlwaysOnSIAPipeline:
         )
         maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
         render_time = time.perf_counter() - render_start
-        return {
+        return self._finalize_result({
             "active": True,
             "output_ready": True,
             "scheduler_state": self._scheduler_state(buffer_ready, gate_state, active=True),
+            "sia_trigger_reason": trigger_reason,
             "rendered_frame": rendered_frame,
             "detections": inference_result["num_detections"],
             "boxes": inference_result["boxes"],
@@ -220,4 +278,4 @@ class AlwaysOnSIAPipeline:
                 **inference_result["timings"],
                 "render_s": render_time,
             },
-        }
+        }, gate_state, active=True)
