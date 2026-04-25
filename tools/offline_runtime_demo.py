@@ -18,6 +18,7 @@ from runtime import (
     open_capture,
 )
 from tools.baseline_utils import (
+    ensure_dir,
     infer_git_commit,
     load_json,
     make_run_dir,
@@ -35,13 +36,13 @@ def parse_args():
     parser.add_argument("--video", help="Optional override for the input video path.")
     parser.add_argument("--weights", help="Optional override for the model weights path.")
     parser.add_argument("--output-root", help="Optional override for the output root.")
+    parser.add_argument("--output-dir", help="Optional explicit run directory for this invocation.")
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from the source video.")
     parser.add_argument("--no-render", action="store_true", help="Disable output video writing.")
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
+def build_raw_config(args):
     raw_config = load_json(args.config)
     if args.video:
         raw_config["video_path"] = args.video
@@ -53,9 +54,11 @@ def main():
         raw_config["max_frames"] = args.max_frames
     if args.no_render:
         raw_config["render_enabled"] = False
+    return raw_config
 
+
+def run_offline_runtime(raw_config, invoked_command, run_name="offline_runtime_demo", run_dir=None):
     config = RuntimeConfig.from_dict(raw_config)
-    invoked_command = " ".join(shlex.quote(part) for part in [sys.executable, *sys.argv])
 
     capture = open_capture(config)
     frame_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -63,7 +66,11 @@ def main():
     source_fps = capture.get(cv2.CAP_PROP_FPS)
     writer_fps = source_fps if source_fps and source_fps > 0 else config.output_fps
 
-    run_dir = make_run_dir(config.output_root, "offline_runtime_demo")
+    if run_dir is None:
+        run_dir = make_run_dir(config.output_root, run_name)
+    else:
+        run_dir = Path(run_dir)
+        ensure_dir(run_dir)
     output_video_path = run_dir / config.output_video_name
     writer = None
     if config.render_enabled:
@@ -104,12 +111,12 @@ def main():
             if result["active"]:
                 active_frames += 1
                 clips_processed += 1
-                frames_written += 1
             render_time = result["timings"]["render_s"]
-            if writer is not None:
+            if writer is not None and result["active"]:
                 write_start = time.perf_counter()
                 writer.write(result["rendered_frame"])
                 render_time += time.perf_counter() - write_start
+                frames_written += 1
 
             loop_time = time.perf_counter() - loop_start
             collector.record_frame(
@@ -209,10 +216,28 @@ def main():
             f"Output video: {output_video_path if writer is not None else 'disabled'}",
         ],
     )
-    print(f"Offline runtime demo complete. Artifacts saved to: {run_dir}")
-    print(f"Metrics: {run_dir / 'metrics.json'}")
-    print(f"Stage timings: {run_dir / 'stage_timings.csv'}")
-    print(f"System metrics: {run_dir / 'system_metrics.csv'}")
+    return {
+        "run_dir": run_dir,
+        "metrics": metrics,
+        "config": config,
+        "output_video_path": output_video_path if writer is not None else None,
+    }
+
+
+def main():
+    args = parse_args()
+    raw_config = build_raw_config(args)
+    invoked_command = " ".join(shlex.quote(part) for part in [sys.executable, *sys.argv])
+    result = run_offline_runtime(
+        raw_config,
+        invoked_command,
+        run_name="offline_runtime_demo",
+        run_dir=args.output_dir,
+    )
+    print(f"Offline runtime demo complete. Artifacts saved to: {result['run_dir']}")
+    print(f"Metrics: {result['run_dir'] / 'metrics.json'}")
+    print(f"Stage timings: {result['run_dir'] / 'stage_timings.csv'}")
+    print(f"System metrics: {result['run_dir'] / 'system_metrics.csv'}")
 
 
 if __name__ == "__main__":
