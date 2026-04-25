@@ -1,7 +1,9 @@
 import argparse
 from pathlib import Path
+import queue
 import shlex
 import sys
+import threading
 import time
 
 import cv2
@@ -11,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from runtime import AlwaysOnSIAPipeline, RuntimeConfig, open_capture
+from runtime.visualize import draw_predictions, resolve_color
 from tools.baseline_utils import infer_git_commit, load_json, make_run_dir, write_json, write_run_summary
 
 
@@ -50,6 +53,7 @@ def main():
     frame_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
     frame_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
     source_fps = capture.get(cv2.CAP_PROP_FPS)
+    writer_fps = source_fps if source_fps and source_fps > 0 else config.output_fps
 
     run_dir = make_run_dir(config.output_root, "live_runtime_demo")
     output_video_path = run_dir / config.output_video_name
@@ -58,13 +62,86 @@ def main():
         writer = cv2.VideoWriter(
             str(output_video_path),
             cv2.VideoWriter_fourcc(*config.video_codec),
-            config.output_fps,
+            writer_fps,
             (frame_width, frame_height),
         )
     if config.show_preview:
         cv2.namedWindow("SiA Live Runtime", cv2.WINDOW_NORMAL)
 
     pipeline = AlwaysOnSIAPipeline(config)
+    overlay_color = resolve_color(config.color)
+    frame_queue = queue.Queue(maxsize=max(64, config.buffer_max_len * 4))
+    stop_event = threading.Event()
+    state_lock = threading.Lock()
+    shared_state = {
+        "frames_captured": 0,
+        "frames_written": 0,
+        "first_frame_logged": False,
+        "first_recorded_frame_logged": False,
+        "latest_preview_frame": None,
+        "latest_annotation": None,
+    }
+
+    def push_frame_for_inference(frame):
+        try:
+            frame_queue.put_nowait(frame)
+            return
+        except queue.Full:
+            pass
+        try:
+            frame_queue.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            frame_queue.put_nowait(frame)
+        except queue.Full:
+            pass
+
+    def capture_worker():
+        while not stop_event.is_set():
+            ret, frame = capture.read()
+            if not ret:
+                stop_event.set()
+                break
+
+            with state_lock:
+                shared_state["frames_captured"] += 1
+                if not shared_state["first_frame_logged"]:
+                    print(
+                        "First frame received from camera. "
+                        f"Frame index: {shared_state['frames_captured']}"
+                    )
+                    shared_state["first_frame_logged"] = True
+
+            push_frame_for_inference(frame.copy())
+
+            output_frame = frame.copy()
+            with state_lock:
+                latest_annotation = shared_state["latest_annotation"]
+                if latest_annotation is not None:
+                    output_frame = draw_predictions(
+                        output_frame,
+                        latest_annotation["boxes"],
+                        latest_annotation["labels"],
+                        latest_annotation["scores"],
+                        overlay_color,
+                        config.font_scale,
+                        config.line_thickness,
+                    )
+                shared_state["latest_preview_frame"] = output_frame.copy()
+
+            if writer is not None:
+                writer.write(output_frame)
+                with state_lock:
+                    shared_state["frames_written"] += 1
+                    if not shared_state["first_recorded_frame_logged"]:
+                        print(
+                            "Recording started. "
+                            f"Output FPS: {round(writer_fps, 3)}. "
+                            f"First recorded output frame index: {shared_state['frames_written']}"
+                        )
+                        shared_state["first_recorded_frame_logged"] = True
+
     print(f"Live runtime initialized. Source: camera:{config.video_device}")
     print(f"Camera resolution: {frame_width}x{frame_height}")
     if source_fps and source_fps > 0:
@@ -74,47 +151,59 @@ def main():
         print(f"Output path: {output_video_path}")
     print("Starting live frame processing...")
     start_wall = time.perf_counter()
-    frame_count = 0
     active_frames = 0
-    first_frame_logged = False
-    writer_frames = 0
-    first_recorded_frame_logged = False
+    capture_thread = threading.Thread(target=capture_worker, name="live-capture", daemon=True)
+    capture_thread.start()
 
     try:
-        while True:
-            ret, frame = capture.read()
-            if not ret:
-                break
-            frame_count += 1
-            if not first_frame_logged:
-                print(f"First frame received from camera. Frame index: {frame_count}")
-                first_frame_logged = True
+        while not stop_event.is_set():
             elapsed_so_far = time.perf_counter() - start_wall
-            if config.max_frames and frame_count > config.max_frames:
+            with state_lock:
+                frames_captured = shared_state["frames_captured"]
+            if config.max_frames and frames_captured >= config.max_frames:
                 break
             if config.max_seconds and elapsed_so_far > config.max_seconds:
                 break
 
+            try:
+                frame = frame_queue.get(timeout=0.1)
+            except queue.Empty:
+                if config.show_preview:
+                    with state_lock:
+                        preview_frame = (
+                            None
+                            if shared_state["latest_preview_frame"] is None
+                            else shared_state["latest_preview_frame"].copy()
+                        )
+                    if preview_frame is not None:
+                        cv2.imshow("SiA Live Runtime", preview_frame)
+                        if cv2.waitKey(1) & 0xFF == ord("q"):
+                            break
+                continue
+
             result = pipeline.process_frame(frame, (frame_height, frame_width))
             if result["active"]:
                 active_frames += 1
-            if writer is not None:
-                target_frames = max(1, int((elapsed_so_far if elapsed_so_far > 0 else 0.0) * config.output_fps))
-                while writer_frames < target_frames:
-                    writer.write(result["rendered_frame"])
-                    writer_frames += 1
-                    if not first_recorded_frame_logged:
-                        print(
-                            "Recording started. "
-                            f"Output FPS target: {config.output_fps}. "
-                            f"First recorded output frame index: {writer_frames}"
-                        )
-                        first_recorded_frame_logged = True
+                with state_lock:
+                    shared_state["latest_annotation"] = {
+                        "boxes": result["boxes"],
+                        "labels": result["labels"],
+                        "scores": result["scores"],
+                    }
             if config.show_preview:
-                cv2.imshow("SiA Live Runtime", result["rendered_frame"])
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+                with state_lock:
+                    preview_frame = (
+                        None
+                        if shared_state["latest_preview_frame"] is None
+                        else shared_state["latest_preview_frame"].copy()
+                    )
+                if preview_frame is not None:
+                    cv2.imshow("SiA Live Runtime", preview_frame)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
     finally:
+        stop_event.set()
+        capture_thread.join(timeout=2.0)
         capture.release()
         if writer is not None:
             writer.release()
@@ -122,21 +211,24 @@ def main():
             cv2.destroyAllWindows()
 
     elapsed_s = time.perf_counter() - start_wall
+    with state_lock:
+        frames_read = shared_state["frames_captured"]
+        frames_written = shared_state["frames_written"]
     metrics = {
         "mode": config.mode,
         "video_device": config.video_device,
         "weights_path": config.weights_path,
         "git_commit": infer_git_commit(),
-        "frames_read": frame_count,
+        "frames_read": frames_read,
         "active_frames": active_frames,
-        "frames_written": writer_frames,
+        "frames_written": frames_written,
         "elapsed_s": round(elapsed_s, 3),
-        "effective_fps": round(frame_count / elapsed_s, 3) if elapsed_s > 0 else None,
+        "effective_fps": round(frames_read / elapsed_s, 3) if elapsed_s > 0 else None,
         "render_enabled": config.render_enabled,
         "show_preview": config.show_preview,
-        "output_fps": config.output_fps if writer is not None else None,
-        "output_duration_s": round(writer_frames / config.output_fps, 3)
-        if writer is not None and config.output_fps > 0
+        "output_fps": round(writer_fps, 3) if writer is not None else None,
+        "output_duration_s": round(frames_written / writer_fps, 3)
+        if writer is not None and writer_fps > 0
         else None,
     }
     write_json(run_dir / "config.json", raw_config)
@@ -148,9 +240,9 @@ def main():
             f"Command: {invoked_command}",
             f"Video device: {config.video_device}",
             f"Weights: {config.weights_path}",
-            f"Frames read: {frame_count}",
+            f"Frames read: {frames_read}",
             f"Active frames: {active_frames}",
-            f"Frames written: {writer_frames}",
+            f"Frames written: {frames_written}",
             f"Elapsed seconds: {metrics['elapsed_s']}",
             f"Effective FPS: {metrics['effective_fps']}",
             f"Output FPS: {metrics['output_fps']}",
