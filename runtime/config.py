@@ -60,7 +60,7 @@ class RuntimeConfig:
         normalize_mean = payload.get("normalize_mean", [0.485, 0.456, 0.406])
         normalize_std = payload.get("normalize_std", [0.229, 0.224, 0.225])
         pipeline_mode = payload.get("pipeline_mode", "always_on")
-        valid_pipeline_modes = {"always_on", "motion_only", "person_only"}
+        valid_pipeline_modes = {"always_on", "motion_only", "person_only", "motion_person_sia"}
         if pipeline_mode not in valid_pipeline_modes:
             raise ValueError(
                 f"Unsupported pipeline_mode '{pipeline_mode}'. Expected one of: {sorted(valid_pipeline_modes)}"

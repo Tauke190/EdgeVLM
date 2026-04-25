@@ -94,6 +94,10 @@ def run_offline_runtime(
     active_frames = 0
     frames_written = 0
     clips_processed = 0
+    output_ready_frames = 0
+    motion_active_frames = 0
+    person_active_frames = 0
+    person_detector_frames = 0
 
     try:
         if progress_callback is not None:
@@ -122,6 +126,14 @@ def run_offline_runtime(
             if result["active"]:
                 active_frames += 1
                 clips_processed += 1
+            if result["output_ready"]:
+                output_ready_frames += 1
+            if result["gate_state"].get("motion_active"):
+                motion_active_frames += 1
+            if result["gate_state"].get("person_active"):
+                person_active_frames += 1
+            if result["gate_state"].get("person_detector_ran"):
+                person_detector_frames += 1
             render_time = result["timings"]["render_s"]
             if config.render_enabled and result["output_ready"]:
                 if writer is None:
@@ -190,8 +202,12 @@ def run_offline_runtime(
         "sync_cuda_timing": config.sync_cuda_timing,
         "frames_read": frame_count,
         "active_frames": active_frames,
+        "output_ready_frames": output_ready_frames,
         "frames_written": frames_written,
         "clips_processed": clips_processed,
+        "motion_active_frames": motion_active_frames,
+        "person_active_frames": person_active_frames,
+        "person_detector_frames": person_detector_frames,
         "elapsed_s": round(elapsed_s, 3),
         "effective_fps": round(clips_processed / elapsed_s, 3) if elapsed_s > 0 else None,
         "source_fps": round(source_fps, 3) if source_fps and source_fps > 0 else None,
@@ -231,8 +247,12 @@ def run_offline_runtime(
             f"Monitor source: {system_monitor.source}",
             f"Frames read: {frame_count}",
             f"Active frames: {active_frames}",
+            f"Output-ready frames: {output_ready_frames}",
             f"Frames written: {frames_written}",
             f"Clips processed: {clips_processed}",
+            f"Motion-active frames: {motion_active_frames}",
+            f"Person-active frames: {person_active_frames}",
+            f"Person-detector frames: {person_detector_frames}",
             f"Elapsed seconds: {metrics['elapsed_s']}",
             f"Effective FPS: {metrics['effective_fps']}",
             f"Inference mean ms: {metrics['timings']['inference']['mean_ms']}",

@@ -18,7 +18,9 @@ class AlwaysOnSIAPipeline:
         self.color = resolve_color(config.color)
         self.motion_gate = None
         self.person_gate = None
-        if config.pipeline_mode == "motion_only":
+        uses_motion_gate = config.pipeline_mode in {"motion_only", "motion_person_sia"}
+        uses_person_gate = config.pipeline_mode in {"person_only", "motion_person_sia"}
+        if uses_motion_gate:
             self.motion_gate = MotionGate(
                 threshold_area=config.motion_threshold_area,
                 motion_frames=config.motion_frames,
@@ -26,7 +28,7 @@ class AlwaysOnSIAPipeline:
                 blur_kernel=config.motion_blur_kernel,
                 learning_rate=config.motion_learning_rate,
             )
-        if config.pipeline_mode == "person_only":
+        if uses_person_gate:
             self.person_gate = PersonGate(
                 detector=config.person_detector,
                 weights=config.person_weights,
@@ -60,19 +62,12 @@ class AlwaysOnSIAPipeline:
             "person_detector_ran": False,
         }
         if self.motion_gate is not None:
-            gate_state = self.motion_gate.update(frame)
-            gate_state.update(
-                {
-                    "person_detected": None,
-                    "person_active": None,
-                    "person_boxes": [],
-                    "person_scores": [],
-                    "person_detector": None,
-                    "person_detector_ran": False,
-                }
-            )
+            gate_state.update(self.motion_gate.update(frame))
         if self.person_gate is not None:
-            gate_state.update(self.person_gate.update(frame))
+            person_gate_enabled = True
+            if self.config.pipeline_mode == "motion_person_sia":
+                person_gate_enabled = bool(gate_state["motion_active"])
+            gate_state.update(self.person_gate.update(frame, enabled=person_gate_enabled))
 
         if not self.buffer.ready():
             return {
@@ -129,6 +124,25 @@ class AlwaysOnSIAPipeline:
                     "render_s": 0.0,
                 },
             }
+        if self.config.pipeline_mode == "motion_person_sia":
+            if not gate_state["motion_active"] or not gate_state["person_active"]:
+                return {
+                    "active": False,
+                    "output_ready": True,
+                    "rendered_frame": self.buffer.render_frame(),
+                    "detections": 0,
+                    "gate_state": gate_state,
+                    "timings": {
+                        "preprocess_s": preprocess_time,
+                        "inference_s": 0.0,
+                        "postprocess_s": 0.0,
+                        "postprocess_filter_s": 0.0,
+                        "postprocess_nms_s": 0.0,
+                        "postprocess_threshold_s": 0.0,
+                        "label_decode_s": 0.0,
+                        "render_s": 0.0,
+                    },
+                }
 
         clip_tensor = build_clip_tensor(
             self.buffer.sampled_clip(),
