@@ -36,6 +36,9 @@ class RuntimeConfig:
     show_preview: bool = False
     video_path: str | None = None
     video_device: int = 0
+    simulate_live: bool = False
+    drop_frames: bool = False
+    source_fps_override: float | None = None
     max_frames: int | None = None
     max_seconds: float | None = None
     motion_threshold_area: int = 1000
@@ -101,6 +104,9 @@ class RuntimeConfig:
             show_preview=bool(payload.get("show_preview", False)),
             video_path=payload.get("video_path"),
             video_device=int(payload.get("video_device", 0)),
+            simulate_live=bool(payload.get("simulate_live", False)),
+            drop_frames=bool(payload.get("drop_frames", False)),
+            source_fps_override=payload.get("source_fps_override"),
             max_frames=payload.get("max_frames"),
             max_seconds=payload.get("max_seconds"),
             motion_threshold_area=int(payload.get("motion_threshold_area", 1000)),

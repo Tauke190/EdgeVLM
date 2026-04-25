@@ -8,8 +8,12 @@ def open_capture(config):
         capture = cv2.VideoCapture(config.video_path)
         source_name = config.video_path
     elif config.mode == "live":
-        capture = cv2.VideoCapture(config.video_device)
-        source_name = f"camera:{config.video_device}"
+        if config.video_path:
+            capture = cv2.VideoCapture(config.video_path)
+            source_name = config.video_path
+        else:
+            capture = cv2.VideoCapture(config.video_device)
+            source_name = f"camera:{config.video_device}"
     else:
         raise ValueError(f"Unsupported runtime mode '{config.mode}'.")
 

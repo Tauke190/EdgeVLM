@@ -135,13 +135,31 @@ Important note:
 
 ## Live Runtime Path
 
-The live runtime path uses the shared runtime core on a camera source.
+The live runtime path uses the shared runtime core on either:
+
+- a real camera device
+- a replayed video paced as if it were a live source
+
+The default live config now targets the full gated path:
+
+- `configs/runtime_live.json` uses `pipeline_mode = motion_person_sia`
+
+If you want the older always-on live behavior, use:
+
+- `configs/runtime_live_always_on.json`
 
 ### Default Camera
 
 ```bash
 ./.venv/bin/python tools/live_runtime_demo.py \
   --config configs/runtime_live.json
+```
+
+### Always-On Camera
+
+```bash
+./.venv/bin/python tools/live_runtime_demo.py \
+  --config configs/runtime_live_always_on.json
 ```
 
 ### Fixed Duration
@@ -177,18 +195,53 @@ The live runtime path uses the shared runtime core on a camera source.
   --no-render
 ```
 
+### Replay A Video As Live
+
+This is the easiest way to validate the gated live path without a camera:
+
+```bash
+./.venv/bin/python tools/live_runtime_demo.py \
+  --config configs/runtime_live.json \
+  --video sample_videos/hit.mp4 \
+  --simulate-live \
+  --no-render
+```
+
+### Replay A Video As Live With Frame Dropping
+
+Use this when you want the replay path to stay wall-clock paced even if inference falls behind:
+
+```bash
+./.venv/bin/python tools/live_runtime_demo.py \
+  --config configs/runtime_live.json \
+  --video sample_videos/hit.mp4 \
+  --simulate-live \
+  --drop-frames \
+  --target-fps 30 \
+  --no-render
+```
+
 ### Expected Live Behavior
 
-- startup logs should print the camera source and resolution
-- if available, reported camera FPS should be printed
+- startup logs should print the source, pipeline mode, and resolution
+- a source FPS target should be printed
 - if rendering is enabled, the output path should be printed
 - a first-frame-received message should appear
 - if rendering is enabled, a recording-started message should appear
 - the run directory should contain:
   - `config.json`
   - `metrics.json`
+  - `stage_timings.csv`
+  - `event_log.csv`
+  - `system_metrics.csv`
   - `run_summary.txt`
   - `runtime_live.mp4` when rendering is enabled
+
+Important note:
+
+- the live path now records scheduler transitions and gate events in `event_log.csv`
+- live replay with `--simulate-live` is meant for validation, not for the final offline benchmark numbers
+- the live output clears stale boxes when the pipeline goes inactive instead of leaving old detections on screen forever
 
 ## Notes
 
