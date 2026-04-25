@@ -122,6 +122,7 @@ def run_offline_runtime(
     motion_event_count = 0
     person_event_count = 0
     sia_activation_count = 0
+    sia_stride_wait_frames = 0
 
     try:
         if progress_callback is not None:
@@ -160,6 +161,8 @@ def run_offline_runtime(
                 person_detector_frames += 1
             scheduler_state = result.get("scheduler_state", "unknown")
             scheduler_state_counts[scheduler_state] += 1
+            if scheduler_state == "sia_stride_wait":
+                sia_stride_wait_frames += 1
             motion_active = bool(result["gate_state"].get("motion_active"))
             person_active = bool(result["gate_state"].get("person_active"))
             sia_active = bool(result["active"])
@@ -368,6 +371,7 @@ def run_offline_runtime(
         "motion_event_count": motion_event_count,
         "person_event_count": person_event_count,
         "sia_activation_count": sia_activation_count,
+        "sia_stride_wait_frames": sia_stride_wait_frames,
         "motion_to_sia_latency_frames": activation_latency_frames,
         "scheduler_state_counts": dict(sorted(scheduler_state_counts.items())),
         "elapsed_s": round(elapsed_s, 3),
@@ -419,6 +423,7 @@ def run_offline_runtime(
             f"Motion events: {motion_event_count}",
             f"Person events: {person_event_count}",
             f"SiA activations: {sia_activation_count}",
+            f"SiA stride-wait frames: {sia_stride_wait_frames}",
             f"Motion-to-SiA latency frames: {activation_latency_frames}",
             f"Scheduler state counts: {dict(sorted(scheduler_state_counts.items()))}",
             f"Elapsed seconds: {metrics['elapsed_s']}",

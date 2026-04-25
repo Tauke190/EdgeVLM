@@ -53,6 +53,7 @@ class RuntimeConfig:
     person_scale: float = 1.05
     person_resize_width: int = 320
     person_min_box_area: int = 4096
+    sia_min_new_frames: int = 9
 
     @classmethod
     def from_dict(cls, payload):
@@ -115,6 +116,7 @@ class RuntimeConfig:
             person_scale=float(payload.get("person_scale", 1.05)),
             person_resize_width=int(payload.get("person_resize_width", 320)),
             person_min_box_area=int(payload.get("person_min_box_area", 4096)),
+            sia_min_new_frames=int(payload.get("sia_min_new_frames", 9)),
         )
 
     @classmethod

@@ -42,6 +42,7 @@ class AlwaysOnSIAPipeline:
                 resize_width=config.person_resize_width,
                 min_box_area=config.person_min_box_area,
             )
+        self.last_sia_push_index = None
 
     def _timing_stub(self, preprocess_time):
         return {
@@ -55,9 +56,11 @@ class AlwaysOnSIAPipeline:
             "render_s": 0.0,
         }
 
-    def _scheduler_state(self, buffer_ready, gate_state, active):
+    def _scheduler_state(self, buffer_ready, gate_state, active, stride_wait=False):
         if active:
             return "sia_active"
+        if stride_wait:
+            return "sia_stride_wait"
 
         if not buffer_ready:
             if self.config.pipeline_mode == "always_on":
@@ -79,6 +82,14 @@ class AlwaysOnSIAPipeline:
                 return "person_check"
             return "idle"
         return "idle"
+
+    def _can_run_sia(self):
+        if self.config.pipeline_mode != "motion_person_sia":
+            return True
+        if self.last_sia_push_index is None:
+            return True
+        pushed_since_last_sia = self.buffer.total_pushed - self.last_sia_push_index
+        return pushed_since_last_sia >= self.config.sia_min_new_frames
 
     def process_frame(self, frame, frame_size):
         preprocess_start = time.perf_counter()
@@ -154,6 +165,22 @@ class AlwaysOnSIAPipeline:
                     "gate_state": gate_state,
                     "timings": self._timing_stub(preprocess_time),
                 }
+            if not self._can_run_sia():
+                scheduler_state = self._scheduler_state(
+                    buffer_ready,
+                    gate_state,
+                    active=False,
+                    stride_wait=True,
+                )
+                return {
+                    "active": False,
+                    "output_ready": True,
+                    "scheduler_state": scheduler_state,
+                    "rendered_frame": self.buffer.render_frame(),
+                    "detections": 0,
+                    "gate_state": gate_state,
+                    "timings": self._timing_stub(preprocess_time),
+                }
 
         clip_tensor = build_clip_tensor(
             self.buffer.sampled_clip(),
@@ -162,6 +189,7 @@ class AlwaysOnSIAPipeline:
             self.core.use_fp16 and not self.config.autocast,
         )
         inference_result = self.core.infer_clip(clip_tensor, frame_size)
+        self.last_sia_push_index = self.buffer.total_pushed
         render_base = self.buffer.render_frame()
 
         maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
