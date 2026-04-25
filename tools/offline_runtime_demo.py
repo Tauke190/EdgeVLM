@@ -1,4 +1,5 @@
 import argparse
+from collections import Counter
 from pathlib import Path
 import shlex
 import sys
@@ -28,6 +29,18 @@ from tools.baseline_utils import (
     write_run_summary,
 )
 from tools.system_monitor import SystemMonitor
+
+EVENT_LOG_FIELDNAMES = [
+    "frame_index",
+    "event",
+    "scheduler_state",
+    "prev_scheduler_state",
+    "motion_active",
+    "person_active",
+    "sia_active",
+    "person_detector_ran",
+    "notes",
+]
 
 
 def parse_args():
@@ -98,6 +111,17 @@ def run_offline_runtime(
     motion_active_frames = 0
     person_active_frames = 0
     person_detector_frames = 0
+    scheduler_state_counts = Counter()
+    event_rows = []
+    prev_scheduler_state = None
+    prev_motion_active = False
+    prev_person_active = False
+    prev_active = False
+    last_motion_start_frame = None
+    activation_latency_frames = []
+    motion_event_count = 0
+    person_event_count = 0
+    sia_activation_count = 0
 
     try:
         if progress_callback is not None:
@@ -134,6 +158,139 @@ def run_offline_runtime(
                 person_active_frames += 1
             if result["gate_state"].get("person_detector_ran"):
                 person_detector_frames += 1
+            scheduler_state = result.get("scheduler_state", "unknown")
+            scheduler_state_counts[scheduler_state] += 1
+            motion_active = bool(result["gate_state"].get("motion_active"))
+            person_active = bool(result["gate_state"].get("person_active"))
+            sia_active = bool(result["active"])
+
+            if scheduler_state != prev_scheduler_state:
+                event_rows.append(
+                    {
+                        "frame_index": frame_count,
+                        "event": "scheduler_transition",
+                        "scheduler_state": scheduler_state,
+                        "prev_scheduler_state": prev_scheduler_state or "",
+                        "motion_active": motion_active,
+                        "person_active": person_active,
+                        "sia_active": sia_active,
+                        "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "notes": "",
+                    }
+                )
+                prev_scheduler_state = scheduler_state
+
+            if motion_active and not prev_motion_active:
+                motion_event_count += 1
+                last_motion_start_frame = frame_count
+                event_rows.append(
+                    {
+                        "frame_index": frame_count,
+                        "event": "motion_active",
+                        "scheduler_state": scheduler_state,
+                        "prev_scheduler_state": "",
+                        "motion_active": True,
+                        "person_active": person_active,
+                        "sia_active": sia_active,
+                        "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "notes": "",
+                    }
+                )
+            if not motion_active and prev_motion_active:
+                event_rows.append(
+                    {
+                        "frame_index": frame_count,
+                        "event": "motion_inactive",
+                        "scheduler_state": scheduler_state,
+                        "prev_scheduler_state": "",
+                        "motion_active": False,
+                        "person_active": person_active,
+                        "sia_active": sia_active,
+                        "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "notes": "",
+                    }
+                )
+            if person_active and not prev_person_active:
+                person_event_count += 1
+                event_rows.append(
+                    {
+                        "frame_index": frame_count,
+                        "event": "person_active",
+                        "scheduler_state": scheduler_state,
+                        "prev_scheduler_state": "",
+                        "motion_active": motion_active,
+                        "person_active": True,
+                        "sia_active": sia_active,
+                        "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "notes": "",
+                    }
+                )
+            if not person_active and prev_person_active:
+                event_rows.append(
+                    {
+                        "frame_index": frame_count,
+                        "event": "person_inactive",
+                        "scheduler_state": scheduler_state,
+                        "prev_scheduler_state": "",
+                        "motion_active": motion_active,
+                        "person_active": False,
+                        "sia_active": sia_active,
+                        "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "notes": "",
+                    }
+                )
+            if sia_active and not prev_active:
+                sia_activation_count += 1
+                latency_note = ""
+                if last_motion_start_frame is not None:
+                    latency_frames = frame_count - last_motion_start_frame
+                    activation_latency_frames.append(latency_frames)
+                    latency_note = f"motion_to_sia_frames={latency_frames}"
+                event_rows.append(
+                    {
+                        "frame_index": frame_count,
+                        "event": "sia_active",
+                        "scheduler_state": scheduler_state,
+                        "prev_scheduler_state": "",
+                        "motion_active": motion_active,
+                        "person_active": person_active,
+                        "sia_active": True,
+                        "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "notes": latency_note,
+                    }
+                )
+            if not sia_active and prev_active:
+                event_rows.append(
+                    {
+                        "frame_index": frame_count,
+                        "event": "sia_inactive",
+                        "scheduler_state": scheduler_state,
+                        "prev_scheduler_state": "",
+                        "motion_active": motion_active,
+                        "person_active": person_active,
+                        "sia_active": False,
+                        "person_detector_ran": bool(result["gate_state"].get("person_detector_ran")),
+                        "notes": "",
+                    }
+                )
+            if result["gate_state"].get("person_detector_ran"):
+                event_rows.append(
+                    {
+                        "frame_index": frame_count,
+                        "event": "person_detector_run",
+                        "scheduler_state": scheduler_state,
+                        "prev_scheduler_state": "",
+                        "motion_active": motion_active,
+                        "person_active": person_active,
+                        "sia_active": sia_active,
+                        "person_detector_ran": True,
+                        "notes": "",
+                    }
+                )
+
+            prev_motion_active = motion_active
+            prev_person_active = person_active
+            prev_active = sia_active
             render_time = result["timings"]["render_s"]
             if config.render_enabled and result["output_ready"]:
                 if writer is None:
@@ -208,6 +365,11 @@ def run_offline_runtime(
         "motion_active_frames": motion_active_frames,
         "person_active_frames": person_active_frames,
         "person_detector_frames": person_detector_frames,
+        "motion_event_count": motion_event_count,
+        "person_event_count": person_event_count,
+        "sia_activation_count": sia_activation_count,
+        "motion_to_sia_latency_frames": activation_latency_frames,
+        "scheduler_state_counts": dict(sorted(scheduler_state_counts.items())),
         "elapsed_s": round(elapsed_s, 3),
         "effective_fps": round(clips_processed / elapsed_s, 3) if elapsed_s > 0 else None,
         "source_fps": round(source_fps, 3) if source_fps and source_fps > 0 else None,
@@ -229,6 +391,7 @@ def run_offline_runtime(
         },
     )
     write_csv(run_dir / "stage_timings.csv", STAGE_TIMING_FIELDNAMES, collector.stage_rows)
+    write_csv(run_dir / "event_log.csv", EVENT_LOG_FIELDNAMES, event_rows)
     write_json(run_dir / "metrics.json", to_builtin(metrics))
     write_run_summary(
         run_dir / "run_summary.txt",
@@ -253,6 +416,11 @@ def run_offline_runtime(
             f"Motion-active frames: {motion_active_frames}",
             f"Person-active frames: {person_active_frames}",
             f"Person-detector frames: {person_detector_frames}",
+            f"Motion events: {motion_event_count}",
+            f"Person events: {person_event_count}",
+            f"SiA activations: {sia_activation_count}",
+            f"Motion-to-SiA latency frames: {activation_latency_frames}",
+            f"Scheduler state counts: {dict(sorted(scheduler_state_counts.items()))}",
             f"Elapsed seconds: {metrics['elapsed_s']}",
             f"Effective FPS: {metrics['effective_fps']}",
             f"Inference mean ms: {metrics['timings']['inference']['mean_ms']}",
@@ -303,6 +471,7 @@ def main():
     print(f"Offline runtime demo complete. Artifacts saved to: {result['run_dir']}")
     print(f"Metrics: {result['run_dir'] / 'metrics.json'}")
     print(f"Stage timings: {result['run_dir'] / 'stage_timings.csv'}")
+    print(f"Event log: {result['run_dir'] / 'event_log.csv'}")
     print(f"System metrics: {result['run_dir'] / 'system_metrics.csv'}")
 
 

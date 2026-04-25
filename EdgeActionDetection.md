@@ -81,6 +81,18 @@ Use `configs/runtime_offline_motion_person_sia.json`, then run:
   --output-dir results/runtime/motion_person_sia_smoke
 ```
 
+### Full Pipeline Benchmark
+
+Use `configs/full_pipeline_runtime.json` with the dedicated benchmark harness:
+
+```bash
+./.venv/bin/python tools/full_pipeline_benchmark.py \
+  --config configs/full_pipeline_runtime.json \
+  --video-dir sample_videos \
+  --max-frames 120 \
+  --output-dir results/full_pipeline/manual_check
+```
+
 ### Useful Offline Options
 
 - `--recursive` to search subdirectories under `--video-dir`
@@ -108,6 +120,7 @@ Per-video files:
 - `config.json`
 - `metrics.json`
 - `stage_timings.csv`
+- `event_log.csv`
 - `system_metrics.csv`
 - `run_summary.txt`
 - `runtime_offline.mp4` when rendering is enabled
@@ -118,6 +131,7 @@ Important note:
 - `pipeline_mode` currently supports `always_on`, `motion_only`, `person_only`, and `motion_person_sia`
 - `person_only` now defaults to `YOLOv8n` from `weights/yolov8n.pt`
 - the shared offline benchmark summaries now record `output_ready_frames`, `motion_active_frames`, `person_active_frames`, and `person_detector_frames`
+- full-pipeline runs now also save `event_log.csv` with scheduler transitions and gate edge events
 
 ## Live Runtime Path
 

@@ -43,6 +43,43 @@ class AlwaysOnSIAPipeline:
                 min_box_area=config.person_min_box_area,
             )
 
+    def _timing_stub(self, preprocess_time):
+        return {
+            "preprocess_s": preprocess_time,
+            "inference_s": 0.0,
+            "postprocess_s": 0.0,
+            "postprocess_filter_s": 0.0,
+            "postprocess_nms_s": 0.0,
+            "postprocess_threshold_s": 0.0,
+            "label_decode_s": 0.0,
+            "render_s": 0.0,
+        }
+
+    def _scheduler_state(self, buffer_ready, gate_state, active):
+        if active:
+            return "sia_active"
+
+        if not buffer_ready:
+            if self.config.pipeline_mode == "always_on":
+                return "buffering"
+            if gate_state["person_active"]:
+                return "person_confirmed_buffering"
+            if gate_state["motion_active"]:
+                return "motion_buffering"
+            return "warming_up"
+
+        if self.config.pipeline_mode == "always_on":
+            return "idle"
+        if self.config.pipeline_mode == "motion_only":
+            return "motion_idle"
+        if self.config.pipeline_mode == "person_only":
+            return "person_check"
+        if self.config.pipeline_mode == "motion_person_sia":
+            if gate_state["motion_active"]:
+                return "person_check"
+            return "idle"
+        return "idle"
+
     def process_frame(self, frame, frame_size):
         preprocess_start = time.perf_counter()
         original_chw = frame.transpose(2, 0, 1)
@@ -69,79 +106,53 @@ class AlwaysOnSIAPipeline:
                 person_gate_enabled = bool(gate_state["motion_active"])
             gate_state.update(self.person_gate.update(frame, enabled=person_gate_enabled))
 
-        if not self.buffer.ready():
+        buffer_ready = self.buffer.ready()
+
+        if not buffer_ready:
+            scheduler_state = self._scheduler_state(buffer_ready, gate_state, active=False)
             return {
                 "active": False,
                 "output_ready": False,
+                "scheduler_state": scheduler_state,
                 "rendered_frame": frame.copy(),
                 "detections": 0,
                 "gate_state": gate_state,
-                "timings": {
-                    "preprocess_s": preprocess_time,
-                    "inference_s": 0.0,
-                    "postprocess_s": 0.0,
-                    "postprocess_filter_s": 0.0,
-                    "postprocess_nms_s": 0.0,
-                    "postprocess_threshold_s": 0.0,
-                    "label_decode_s": 0.0,
-                    "render_s": 0.0,
-                },
+                "timings": self._timing_stub(preprocess_time),
             }
 
         if self.config.pipeline_mode == "motion_only" and not gate_state["motion_active"]:
+            scheduler_state = self._scheduler_state(buffer_ready, gate_state, active=False)
             return {
                 "active": False,
                 "output_ready": True,
+                "scheduler_state": scheduler_state,
                 "rendered_frame": self.buffer.render_frame(),
                 "detections": 0,
                 "gate_state": gate_state,
-                "timings": {
-                    "preprocess_s": preprocess_time,
-                    "inference_s": 0.0,
-                    "postprocess_s": 0.0,
-                    "postprocess_filter_s": 0.0,
-                    "postprocess_nms_s": 0.0,
-                    "postprocess_threshold_s": 0.0,
-                    "label_decode_s": 0.0,
-                    "render_s": 0.0,
-                },
+                "timings": self._timing_stub(preprocess_time),
             }
         if self.config.pipeline_mode == "person_only" and not gate_state["person_active"]:
+            scheduler_state = self._scheduler_state(buffer_ready, gate_state, active=False)
             return {
                 "active": False,
                 "output_ready": True,
+                "scheduler_state": scheduler_state,
                 "rendered_frame": self.buffer.render_frame(),
                 "detections": 0,
                 "gate_state": gate_state,
-                "timings": {
-                    "preprocess_s": preprocess_time,
-                    "inference_s": 0.0,
-                    "postprocess_s": 0.0,
-                    "postprocess_filter_s": 0.0,
-                    "postprocess_nms_s": 0.0,
-                    "postprocess_threshold_s": 0.0,
-                    "label_decode_s": 0.0,
-                    "render_s": 0.0,
-                },
+                "timings": self._timing_stub(preprocess_time),
             }
         if self.config.pipeline_mode == "motion_person_sia":
             if not gate_state["motion_active"] or not gate_state["person_active"]:
+                scheduler_state = self._scheduler_state(buffer_ready, gate_state, active=False)
                 return {
                     "active": False,
                     "output_ready": True,
+                    "scheduler_state": scheduler_state,
                     "rendered_frame": self.buffer.render_frame(),
                     "detections": 0,
                     "gate_state": gate_state,
-                    "timings": {
-                        "preprocess_s": preprocess_time,
-                        "inference_s": 0.0,
-                        "postprocess_s": 0.0,
-                        "postprocess_filter_s": 0.0,
-                        "postprocess_nms_s": 0.0,
-                        "postprocess_threshold_s": 0.0,
-                        "label_decode_s": 0.0,
-                        "render_s": 0.0,
-                    },
+                    "timings": self._timing_stub(preprocess_time),
                 }
 
         clip_tensor = build_clip_tensor(
@@ -169,6 +180,7 @@ class AlwaysOnSIAPipeline:
         return {
             "active": True,
             "output_ready": True,
+            "scheduler_state": self._scheduler_state(buffer_ready, gate_state, active=True),
             "rendered_frame": rendered_frame,
             "detections": inference_result["num_detections"],
             "boxes": inference_result["boxes"],
