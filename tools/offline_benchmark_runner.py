@@ -143,6 +143,7 @@ def matching_completed_run(existing_run, expected_config, run_dir):
         existing_config.get("video_path") == expected_config.get("video_path"),
         existing_config.get("weights_path") == expected_config.get("weights_path"),
         existing_config.get("max_frames") == expected_config.get("max_frames"),
+        existing_config.get("pipeline_mode", "always_on") == expected_config.get("pipeline_mode", "always_on"),
         bool(existing_config.get("render_enabled", True)) == bool(expected_config.get("render_enabled", True)),
         existing_config.get("precision", expected_config.get("precision")) == expected_config.get("precision"),
         bool(existing_config.get("autocast", expected_config.get("autocast", False)))
@@ -160,6 +161,7 @@ def summary_row(video_path, run_dir, metrics, output_video_path, status="ok", er
     return {
         "video_path": str(video_path),
         "run_dir": str(run_dir),
+        "pipeline_mode": metrics.get("pipeline_mode"),
         "frames_read": metrics.get("frames_read"),
         "active_frames": metrics.get("active_frames"),
         "clips_processed": metrics.get("clips_processed"),
@@ -313,6 +315,7 @@ def main():
         [
             "video_path",
             "run_dir",
+            "pipeline_mode",
             "frames_read",
             "active_frames",
             "clips_processed",

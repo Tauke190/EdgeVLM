@@ -173,6 +173,7 @@ def run_offline_runtime(
     elapsed_s = time.perf_counter() - start_wall
     metrics = {
         "mode": config.mode,
+        "pipeline_mode": config.pipeline_mode,
         "video_path": config.video_path,
         "weights_path": config.weights_path,
         "git_commit": infer_git_commit(),
@@ -203,6 +204,7 @@ def run_offline_runtime(
         {
             **raw_config,
             "resolved_device": str(pipeline.core.device),
+            "pipeline_mode": config.pipeline_mode,
             "precision": config.precision,
             "autocast": config.autocast,
             "top_k_labels": config.top_k_labels,
@@ -219,6 +221,7 @@ def run_offline_runtime(
             f"Command: {invoked_command}",
             f"Video: {config.video_path}",
             f"Weights: {config.weights_path}",
+            f"Pipeline mode: {config.pipeline_mode}",
             f"Device: {pipeline.core.device}",
             f"Precision: {config.precision}",
             f"Autocast enabled: {config.autocast}",

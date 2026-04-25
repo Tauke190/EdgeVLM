@@ -9,6 +9,11 @@ The offline benchmark harness can run:
 - one explicit video with `--video`
 - a whole directory of videos with `--video-dir`
 
+The shared runtime currently supports these pipeline modes:
+
+- `always_on`
+- `motion_only`
+
 ### Single Video
 
 ```bash
@@ -33,6 +38,19 @@ The offline benchmark harness can run:
   --video-dir sample_videos \
   --max-frames 120 \
   --no-render
+```
+
+### Motion-Only Smoke Test
+
+Set `pipeline_mode` to `motion_only` in the config or in a copied config file, then run:
+
+```bash
+./.venv/bin/python tools/offline_benchmark_runner.py \
+  --config configs/runtime_offline.json \
+  --video-dir sample_videos \
+  --max-frames 120 \
+  --no-render \
+  --output-dir results/runtime/motion_only_smoke
 ```
 
 ### Useful Offline Options
@@ -69,6 +87,8 @@ Per-video files:
 Important note:
 
 - if you pass `--no-render`, the benchmark still runs and writes metrics, but output videos are intentionally disabled
+- `pipeline_mode` currently supports `always_on` and `motion_only`
+- `person_only` and the full motion-person-SiA path are not in the shared runtime yet
 
 ## Live Runtime Path
 

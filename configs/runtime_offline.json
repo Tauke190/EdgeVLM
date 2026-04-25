@@ -1,5 +1,6 @@
 {
   "mode": "offline",
+  "pipeline_mode": "always_on",
   "video_path": "video.mp4",
   "weights_path": "weights/avak_b16_11.pt",
   "actions_json": "gpt/GPT_AVA.json",
@@ -35,5 +36,10 @@
   "color": "green",
   "font_scale": 0.3,
   "line_thickness": 1,
-  "render_enabled": true
+  "render_enabled": true,
+  "motion_threshold_area": 1000,
+  "motion_frames": 3,
+  "motion_cooldown_frames": 60,
+  "motion_blur_kernel": 5,
+  "motion_learning_rate": 0.001
 }

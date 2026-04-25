@@ -1,5 +1,6 @@
 {
   "mode": "live",
+  "pipeline_mode": "always_on",
   "video_device": 0,
   "weights_path": "weights/avak_b16_11.pt",
   "actions_json": "gpt/GPT_AVA.json",
@@ -36,5 +37,10 @@
   "font_scale": 1.0,
   "line_thickness": 1,
   "render_enabled": true,
-  "show_preview": false
+  "show_preview": false,
+  "motion_threshold_area": 1000,
+  "motion_frames": 3,
+  "motion_cooldown_frames": 60,
+  "motion_blur_kernel": 5,
+  "motion_learning_rate": 0.001
 }
