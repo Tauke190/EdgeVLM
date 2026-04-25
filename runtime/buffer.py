@@ -9,12 +9,14 @@ class SlidingWindowBuffer:
         self.sample_indices = np.arange(0, self.buffer_max_len, self.sample_stride)[: self.num_frames]
         self.frame_buffer = []
         self.plot_buffer = []
+        self.total_pushed = 0
 
     @property
     def mid_index(self):
         return self.buffer_max_len // 2
 
     def push(self, resized_chw, original_chw):
+        self.total_pushed += 1
         self.frame_buffer.append(resized_chw)
         self.plot_buffer.append(original_chw)
         if len(self.frame_buffer) > self.buffer_max_len:
@@ -22,7 +24,7 @@ class SlidingWindowBuffer:
             self.plot_buffer.pop(0)
 
     def ready(self):
-        return len(self.frame_buffer) >= self.buffer_max_len
+        return self.total_pushed > self.buffer_max_len
 
     def sampled_clip(self):
         if not self.ready():

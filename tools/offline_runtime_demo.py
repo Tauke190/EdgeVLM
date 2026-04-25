@@ -104,12 +104,12 @@ def main():
             if result["active"]:
                 active_frames += 1
                 clips_processed += 1
+                frames_written += 1
             render_time = result["timings"]["render_s"]
             if writer is not None:
                 write_start = time.perf_counter()
                 writer.write(result["rendered_frame"])
                 render_time += time.perf_counter() - write_start
-                frames_written += 1
 
             loop_time = time.perf_counter() - loop_start
             collector.record_frame(
