@@ -96,6 +96,15 @@ def parse_args():
         help="TensorRT engine path used when --include-tensorrt is set.",
     )
     parser.add_argument(
+        "--include-tensorrt-int8",
+        action="store_true",
+        help="Include the TensorRT INT8 backend in the comparison package.",
+    )
+    parser.add_argument(
+        "--trt-int8-engine-path",
+        help="TensorRT INT8 engine path used when --include-tensorrt-int8 is set.",
+    )
+    parser.add_argument(
         "--output-dir",
         default="results/runtime/backend_compare",
         help="Output directory for comparison artifacts.",
@@ -139,10 +148,12 @@ def validate_args(args):
         raise RuntimeError(f"Unsupported PyTorch precisions: {invalid_precisions}")
     if args.include_tensorrt and not args.trt_engine_path:
         raise RuntimeError("--trt-engine-path is required when --include-tensorrt is set.")
+    if args.include_tensorrt_int8 and not args.trt_int8_engine_path:
+        raise RuntimeError("--trt-int8-engine-path is required when --include-tensorrt-int8 is set.")
     return video_path, source_modes, modes, pytorch_precisions
 
 
-def build_raw_config(args, source_mode, pipeline_mode, backend_name, precision, video_path):
+def build_raw_config(args, source_mode, pipeline_mode, backend_name, precision, video_path, trt_engine_path=None):
     raw_config = base_config_for(source_mode, pipeline_mode)
     raw_config["pipeline_mode"] = pipeline_mode
     raw_config["backend_name"] = backend_name
@@ -157,7 +168,7 @@ def build_raw_config(args, source_mode, pipeline_mode, backend_name, precision, 
     if args.no_render:
         raw_config["render_enabled"] = False
     if backend_name == "tensorrt":
-        raw_config["trt_engine_path"] = args.trt_engine_path
+        raw_config["trt_engine_path"] = trt_engine_path
     if source_mode == "live_replay":
         raw_config["mode"] = "live"
         raw_config["simulate_live"] = True
@@ -168,10 +179,24 @@ def build_raw_config(args, source_mode, pipeline_mode, backend_name, precision, 
     return raw_config
 
 
-def build_variant_specs(pytorch_precisions, include_tensorrt):
-    variants = [("pytorch", precision) for precision in pytorch_precisions]
-    if include_tensorrt:
-        variants.append(("tensorrt", "fp16"))
+def build_variant_specs(args, pytorch_precisions):
+    variants = [{"backend_name": "pytorch", "precision": precision, "trt_engine_path": None} for precision in pytorch_precisions]
+    if args.include_tensorrt:
+        variants.append(
+            {
+                "backend_name": "tensorrt",
+                "precision": "fp16",
+                "trt_engine_path": args.trt_engine_path,
+            }
+        )
+    if args.include_tensorrt_int8:
+        variants.append(
+            {
+                "backend_name": "tensorrt",
+                "precision": "int8",
+                "trt_engine_path": args.trt_int8_engine_path,
+            }
+        )
     return variants
 
 
@@ -231,7 +256,7 @@ def apply_cross_backend_deltas(rows):
             )
 
 
-def build_notes(args, rows, variants):
+def build_notes(rows, variants):
     lines = [
         "# Runtime Backend Comparison",
         "",
@@ -254,9 +279,11 @@ def build_notes(args, rows, variants):
         "",
         "Variants included:",
     ]
-    for backend_name, precision in variants:
+    for variant in variants:
+        backend_name = variant["backend_name"]
+        precision = variant["precision"]
         if backend_name == "tensorrt":
-            lines.append(f"- {backend_name} {precision} using engine: {args.trt_engine_path}")
+            lines.append(f"- {backend_name} {precision} using engine: {variant['trt_engine_path']}")
         else:
             lines.append(f"- {backend_name} {precision}")
     successful = [row for row in rows if row["status"] == "ok"]
@@ -280,7 +307,7 @@ def main():
     ensure_dir(output_dir)
     runs_dir = output_dir / "runs"
     ensure_dir(runs_dir)
-    variants = build_variant_specs(pytorch_precisions, args.include_tensorrt)
+    variants = build_variant_specs(args, pytorch_precisions)
     invoked_command = " ".join(shlex.quote(part) for part in [sys.executable, *sys.argv])
 
     rows = []
@@ -290,11 +317,22 @@ def main():
     total_experiments = len(source_modes) * len(modes) * len(variants)
     for source_mode in source_modes:
         for pipeline_mode in modes:
-            for backend_name, precision in variants:
+            for variant in variants:
                 experiment_index += 1
+                backend_name = variant["backend_name"]
+                precision = variant["precision"]
+                trt_engine_path = variant["trt_engine_path"]
                 comparison_label = f"{backend_name}_{precision}"
                 experiment_id = f"{experiment_index:02d}_{source_mode}_{pipeline_mode}_{comparison_label}"
-                raw_config = build_raw_config(args, source_mode, pipeline_mode, backend_name, precision, video_path)
+                raw_config = build_raw_config(
+                    args,
+                    source_mode,
+                    pipeline_mode,
+                    backend_name,
+                    precision,
+                    video_path,
+                    trt_engine_path=trt_engine_path,
+                )
                 run_dir = runs_dir / experiment_id
                 print(f"[{experiment_index}/{total_experiments}] Running {experiment_id}")
                 try:
@@ -386,11 +424,11 @@ def main():
         "invoked_command": invoked_command,
         "variants": [
             {
-                "backend_name": backend_name,
-                "precision": precision,
-                "trt_engine_path": args.trt_engine_path if backend_name == "tensorrt" else None,
+                "backend_name": variant["backend_name"],
+                "precision": variant["precision"],
+                "trt_engine_path": variant["trt_engine_path"],
             }
-            for backend_name, precision in variants
+            for variant in variants
         ],
         "rows": rows,
         "detailed_runs": detailed_runs,
@@ -398,7 +436,7 @@ def main():
     }
     write_csv(output_dir / "comparison_summary.csv", SUMMARY_FIELDNAMES, rows)
     write_json(output_dir / "comparison_summary.json", payload)
-    write_run_summary(output_dir / "README.md", build_notes(args, rows, variants))
+    write_run_summary(output_dir / "README.md", build_notes(rows, variants))
 
     print(f"Runtime backend comparison saved to: {output_dir}")
     print(f"CSV summary: {output_dir / 'comparison_summary.csv'}")

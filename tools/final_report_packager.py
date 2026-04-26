@@ -26,8 +26,10 @@ FINAL_TABLE_FIELDNAMES = [
     "output_ready_frames",
     "active_frames",
     "active_fraction_output_ready",
+    "sia_active_fraction",
     "effective_input_fps",
     "effective_active_fps",
+    "sia_active_fps",
     "inference_mean_ms",
     "postprocess_mean_ms",
     "render_mean_ms",
@@ -118,8 +120,30 @@ def summarize_latencies(latency_values):
     return round(sum(latency_values) / len(latency_values), 3), round(statistics.median(latency_values), 3)
 
 
+def derive_sia_active_fraction(active_frames, output_ready_frames):
+    if active_frames in (None, "") or output_ready_frames in (None, "", 0):
+        return None
+    active_frames = int(active_frames)
+    output_ready_frames = int(output_ready_frames)
+    if output_ready_frames <= 0:
+        return None
+    return round(active_frames / output_ready_frames, 4)
+
+
+def derive_sia_active_fps(active_loop_mean_ms):
+    if active_loop_mean_ms in (None, "", 0):
+        return None
+    active_loop_mean_ms = float(active_loop_mean_ms)
+    if active_loop_mean_ms <= 0.0:
+        return None
+    return round(1000.0 / active_loop_mean_ms, 3)
+
+
 def normalize_backend_row(row):
     latency_values = []
+    active_frames = maybe_int(row.get("active_frames"))
+    output_ready_frames = maybe_int(row.get("output_ready_frames"))
+    active_loop_mean_ms = maybe_float(row.get("active_loop_mean_ms"))
     return {
         "section": "backend_compare",
         "comparison_label": row.get("comparison_label"),
@@ -129,15 +153,17 @@ def normalize_backend_row(row):
         "precision": row.get("precision"),
         "video_path": row.get("video_path"),
         "frames_read": maybe_int(row.get("frames_read")),
-        "output_ready_frames": maybe_int(row.get("output_ready_frames")),
-        "active_frames": maybe_int(row.get("active_frames")),
+        "output_ready_frames": output_ready_frames,
+        "active_frames": active_frames,
         "active_fraction_output_ready": maybe_float(row.get("active_fraction_output_ready")),
+        "sia_active_fraction": derive_sia_active_fraction(active_frames, output_ready_frames),
         "effective_input_fps": maybe_float(row.get("effective_input_fps")),
         "effective_active_fps": maybe_float(row.get("effective_active_fps")),
+        "sia_active_fps": derive_sia_active_fps(active_loop_mean_ms),
         "inference_mean_ms": maybe_float(row.get("inference_mean_ms")),
         "postprocess_mean_ms": maybe_float(row.get("postprocess_mean_ms")),
         "render_mean_ms": maybe_float(row.get("render_mean_ms")),
-        "active_loop_mean_ms": maybe_float(row.get("active_loop_mean_ms")),
+        "active_loop_mean_ms": active_loop_mean_ms,
         "motion_event_count": maybe_int(row.get("motion_event_count")),
         "person_event_count": maybe_int(row.get("person_event_count")),
         "sia_activation_count": maybe_int(row.get("sia_activation_count")),
@@ -169,6 +195,7 @@ def normalize_full_pipeline_row(summary_payload):
     output_ready = metrics.get("output_ready_frames") or 0
     active = metrics.get("active_frames") or 0
     active_fraction = round(active / output_ready, 4) if output_ready > 0 else None
+    active_loop_mean_ms = metrics.get("timings", {}).get("active_loop", {}).get("mean_ms")
     return {
         "section": "full_pipeline",
         "comparison_label": "staged_pipeline_long_clip",
@@ -181,12 +208,14 @@ def normalize_full_pipeline_row(summary_payload):
         "output_ready_frames": metrics.get("output_ready_frames"),
         "active_frames": metrics.get("active_frames"),
         "active_fraction_output_ready": active_fraction,
+        "sia_active_fraction": active_fraction,
         "effective_input_fps": metrics.get("effective_input_fps", metrics.get("effective_fps")),
         "effective_active_fps": metrics.get("effective_active_fps", metrics.get("effective_fps")),
+        "sia_active_fps": derive_sia_active_fps(active_loop_mean_ms),
         "inference_mean_ms": metrics.get("timings", {}).get("inference", {}).get("mean_ms"),
         "postprocess_mean_ms": metrics.get("timings", {}).get("postprocess", {}).get("mean_ms"),
         "render_mean_ms": metrics.get("timings", {}).get("render", {}).get("mean_ms"),
-        "active_loop_mean_ms": metrics.get("timings", {}).get("active_loop", {}).get("mean_ms"),
+        "active_loop_mean_ms": active_loop_mean_ms,
         "motion_event_count": metrics.get("motion_event_count"),
         "person_event_count": metrics.get("person_event_count"),
         "sia_activation_count": metrics.get("sia_activation_count"),
@@ -239,9 +268,11 @@ def build_talking_points(rows):
     live_always_fp32 = select_backend_row(rows, "live_replay", "always_on", "pytorch", "fp32")
     live_always_fp16 = select_backend_row(rows, "live_replay", "always_on", "pytorch", "fp16")
     live_always_trt = select_backend_row(rows, "live_replay", "always_on", "tensorrt", "fp16")
+    live_always_trt_int8 = select_backend_row(rows, "live_replay", "always_on", "tensorrt", "int8")
     live_staged_fp32 = select_backend_row(rows, "live_replay", "motion_person_sia", "pytorch", "fp32")
     live_staged_fp16 = select_backend_row(rows, "live_replay", "motion_person_sia", "pytorch", "fp16")
     live_staged_trt = select_backend_row(rows, "live_replay", "motion_person_sia", "tensorrt", "fp16")
+    live_staged_trt_int8 = select_backend_row(rows, "live_replay", "motion_person_sia", "tensorrt", "int8")
     long_pipeline = next(row for row in rows if row["section"] == "full_pipeline")
 
     lines = [
@@ -262,29 +293,37 @@ def build_talking_points(rows):
     if live_always_fp32 and live_always_fp16 and live_always_trt:
         lines.extend(
             [
-                f"- In live-like always-on runs, PyTorch fp32 averaged {fmt(live_always_fp32['inference_mean_ms'])} ms inference and {fmt(live_always_fp32['effective_active_fps'])} effective active FPS.",
-                f"- PyTorch fp16 improved that to {fmt(live_always_fp16['inference_mean_ms'])} ms inference and {fmt(live_always_fp16['effective_active_fps'])} effective active FPS.",
-                f"- TensorRT fp16 improved it further to {fmt(live_always_trt['inference_mean_ms'])} ms inference and {fmt(live_always_trt['effective_active_fps'])} effective active FPS.",
-                f"- Relative to PyTorch fp16 in that same live-like always-on condition, TensorRT fp16 changed inference latency by {fmt(live_always_trt['delta_vs_pytorch_fp16_inference_mean_ms_pct'], 1)}% and effective active FPS by {fmt(live_always_trt['delta_vs_pytorch_fp16_effective_active_fps_pct'], 1)}%.",
+                f"- In live-like always-on runs, PyTorch fp32 sustained {fmt(live_always_fp32['sia_active_fps'])} SiA-active FPS with SiA active on {fmt(live_always_fp32['sia_active_fraction'], 4)} of output-ready frames.",
+                f"- PyTorch fp16 improved that to {fmt(live_always_fp16['sia_active_fps'])} SiA-active FPS, with SiA still active on {fmt(live_always_fp16['sia_active_fraction'], 4)} of output-ready frames.",
+                f"- TensorRT fp16 improved it further to {fmt(live_always_trt['sia_active_fps'])} SiA-active FPS, with SiA still active on {fmt(live_always_trt['sia_active_fraction'], 4)} of output-ready frames.",
+                f"- Relative to PyTorch fp16 in that same live-like always-on condition, TensorRT fp16 changed inference latency by {fmt(live_always_trt['delta_vs_pytorch_fp16_inference_mean_ms_pct'], 1)}% while changing SiA-active FPS from {fmt(live_always_fp16['sia_active_fps'])} to {fmt(live_always_trt['sia_active_fps'])}.",
             ]
         )
+        if live_always_trt_int8:
+            lines.append(
+                f"- TensorRT int8 reached {fmt(live_always_trt_int8['sia_active_fps'])} SiA-active FPS in that same live-like always-on condition, showing whether INT8 added anything meaningful beyond TensorRT fp16."
+            )
 
     if live_staged_fp32 and live_staged_fp16 and live_staged_trt:
         lines.extend(
             [
-                f"- In live-like staged runs, PyTorch fp32 averaged {fmt(live_staged_fp32['inference_mean_ms'])} ms inference and {fmt(live_staged_fp32['effective_active_fps'])} effective active FPS.",
-                f"- PyTorch fp16 improved that to {fmt(live_staged_fp16['inference_mean_ms'])} ms inference and {fmt(live_staged_fp16['effective_active_fps'])} effective active FPS.",
-                f"- TensorRT fp16 improved staged inference latency further to {fmt(live_staged_trt['inference_mean_ms'])} ms, but effective active FPS remained close to PyTorch fp16 at {fmt(live_staged_trt['effective_active_fps'])}.",
-                "- That means the backend acceleration is real, but in the staged live-like path the remaining limit is no longer just raw model execution. Shared-runtime and scheduler overhead still matter.",
+                f"- In live-like staged runs, PyTorch fp32 sustained {fmt(live_staged_fp32['sia_active_fps'])} SiA-active FPS with SiA active on {fmt(live_staged_fp32['sia_active_fraction'], 4)} of output-ready frames.",
+                f"- PyTorch fp16 improved that to {fmt(live_staged_fp16['sia_active_fps'])} SiA-active FPS with SiA active on {fmt(live_staged_fp16['sia_active_fraction'], 4)} of output-ready frames.",
+                f"- TensorRT fp16 improved staged inference latency further to {fmt(live_staged_trt['inference_mean_ms'])} ms and raised SiA-active FPS to {fmt(live_staged_trt['sia_active_fps'])}, while keeping SiA active on only {fmt(live_staged_trt['sia_active_fraction'], 4)} of output-ready frames.",
+                "- That means staged mode should be read as two metrics: how fast SiA runs when active, and how rarely the scheduler needs SiA at all.",
             ]
         )
+        if live_staged_trt_int8:
+            lines.append(
+                f"- TensorRT int8 in live-like staged mode reached {fmt(live_staged_trt_int8['sia_active_fps'])} SiA-active FPS with the same SiA-active fraction of {fmt(live_staged_trt_int8['sia_active_fraction'], 4)}, which makes the INT8 marginal gain easy to compare directly against TensorRT fp16."
+            )
 
     lines.extend(
         [
             "",
             "## Full Staged-Pipeline Findings",
             f"- On the longer surveillance-style clip, the full motion+person+SiA pipeline processed {long_pipeline['frames_read']} frames and produced {long_pipeline['output_ready_frames']} output-ready frames.",
-            f"- The expensive SiA tier was active on only {long_pipeline['active_frames']} frames, which is an active fraction of {fmt(long_pipeline['active_fraction_output_ready'], 4)}.",
+            f"- The expensive SiA tier was active on only {long_pipeline['active_frames']} frames, which is an SiA-active fraction of {fmt(long_pipeline['sia_active_fraction'], 4)}.",
             f"- That long run recorded {long_pipeline['motion_event_count']} motion event, {long_pipeline['person_event_count']} person events, and {long_pipeline['sia_activation_count']} expensive-tier activations.",
             f"- The trigger reasons were {long_pipeline['sia_trigger_reason_counts']}, showing that most reactivations came from minimum-new-frame logic with a smaller number of person-edge wakeups.",
         ]
@@ -300,7 +339,7 @@ def build_talking_points(rows):
             "",
             "## Interpretation",
             "- The project result is not just that the model can be sped up in isolation. The result is that the staged runtime, scheduler, and backend choices can now be compared on one shared measurement surface.",
-            "- TensorRT fp16 is the main proven acceleration branch. It improves the expensive tier materially, but the live-like staged path still shows remaining systems overhead beyond raw engine speed.",
+            "- TensorRT fp16 is the main proven acceleration branch. It improves SiA-active FPS materially, but the live-like staged path still shows remaining systems overhead beyond raw engine speed.",
             "- DeepStream is not required to defend the current contribution. The main contribution is the measured staged Jetson runtime with explicit tradeoffs, not the name of an SDK.",
             "",
             "## Future Work",
