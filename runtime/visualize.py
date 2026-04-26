@@ -44,3 +44,45 @@ def draw_predictions(frame, boxes, labels, scores, color, font_scale, thickness)
             )
             offset += 20
     return rendered
+
+
+def draw_active_tier_overlay(frame, tier_status, font_scale=0.8, thickness=2):
+    rendered = frame.copy()
+    active_color = COLORS["green"]
+    inactive_color = (120, 120, 120)
+    person_color = COLORS["blue"]
+    action_color = COLORS["yellow"]
+
+    lines = [
+        {
+            "text": "T1: MOTION",
+            "active": bool(tier_status.get("motion_active")),
+            "active_color": active_color,
+        },
+        {
+            "text": f"T2: PERSON ({int(tier_status.get('person_count', 0))})",
+            "active": bool(tier_status.get("person_active")),
+            "active_color": person_color,
+        },
+        {
+            "text": f"T3: ACTION ({int(tier_status.get('action_inference_count', 0))})",
+            "active": bool(tier_status.get("action_display_active")),
+            "active_color": action_color,
+        },
+    ]
+
+    y = 36
+    for line in lines:
+        color = line["active_color"] if line["active"] else inactive_color
+        cv2.putText(
+            rendered,
+            line["text"],
+            (18, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            color,
+            thickness,
+            cv2.LINE_AA,
+        )
+        y += int(34 * font_scale) + 10
+    return rendered

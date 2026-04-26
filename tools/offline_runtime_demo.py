@@ -56,6 +56,7 @@ def parse_args():
     parser.add_argument("--output-dir", help="Optional explicit run directory for this invocation.")
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from the source video.")
     parser.add_argument("--no-render", action="store_true", help="Disable output video writing.")
+    parser.add_argument("--show-active-tiers", action="store_true", help="Overlay tier activity indicators on rendered output.")
     return parser.parse_args()
 
 
@@ -78,6 +79,8 @@ def build_raw_config(args):
         raw_config["max_frames"] = args.max_frames
     if args.no_render:
         raw_config["render_enabled"] = False
+    if args.show_active_tiers:
+        raw_config["show_active_tiers"] = True
     return raw_config
 
 
@@ -393,11 +396,16 @@ def run_offline_runtime(
         "frames_written": frames_written,
         "clips_processed": clips_processed,
         "motion_active_frames": motion_active_frames,
+        "frames_with_motion": motion_active_frames,
         "person_active_frames": person_active_frames,
+        "frames_with_person": person_active_frames,
         "person_detector_frames": person_detector_frames,
+        "frames_with_person_detector": person_detector_frames,
         "motion_event_count": motion_event_count,
         "person_event_count": person_event_count,
         "sia_activation_count": sia_activation_count,
+        "action_inferences": sia_activation_count,
+        "frames_with_sia_active": active_frames,
         "sia_target_fps": config.sia_target_fps,
         "sia_stride_wait_frames": sia_stride_wait_frames,
         "sia_trigger_reason_counts": dict(sorted(sia_trigger_reason_counts.items())),
@@ -409,8 +417,13 @@ def run_offline_runtime(
         "effective_active_fps": round(active_frames / active_loop_total_s, 3)
         if active_loop_total_s > 0
         else None,
+        "motion_frame_fraction": round(motion_active_frames / frame_count, 4) if frame_count > 0 else None,
+        "person_frame_fraction": round(person_active_frames / frame_count, 4) if frame_count > 0 else None,
+        "sia_active_frame_fraction": round(active_frames / frame_count, 4) if frame_count > 0 else None,
+        "person_detector_frame_fraction": round(person_detector_frames / frame_count, 4) if frame_count > 0 else None,
         "source_fps": round(source_fps, 3) if source_fps and source_fps > 0 else None,
         "render_enabled": config.render_enabled,
+        "show_active_tiers": config.show_active_tiers,
         "monitor_source": system_monitor.source,
         "timings": collector.summarized_timings(),
     }
@@ -428,6 +441,7 @@ def run_offline_runtime(
             "sia_target_fps": config.sia_target_fps,
             "sync_cuda_timing": config.sync_cuda_timing,
             "render_enabled": config.render_enabled,
+            "show_active_tiers": config.show_active_tiers,
         },
     )
     write_csv(run_dir / "stage_timings.csv", STAGE_TIMING_FIELDNAMES, collector.stage_rows)

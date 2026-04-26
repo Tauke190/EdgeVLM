@@ -36,6 +36,7 @@ class RuntimeConfig:
     sync_cuda_timing: bool = True
     system_metrics_interval_s: float = 1.0
     render_enabled: bool = True
+    show_active_tiers: bool = False
     show_preview: bool = False
     video_path: str | None = None
     video_device: int = 0
@@ -112,6 +113,7 @@ class RuntimeConfig:
             sync_cuda_timing=bool(payload.get("sync_cuda_timing", True)),
             system_metrics_interval_s=float(payload.get("system_metrics_interval_s", 1.0)),
             render_enabled=bool(payload.get("render_enabled", True)),
+            show_active_tiers=bool(payload.get("show_active_tiers", False)),
             show_preview=bool(payload.get("show_preview", False)),
             video_path=payload.get("video_path"),
             video_device=int(payload.get("video_device", 0)),
