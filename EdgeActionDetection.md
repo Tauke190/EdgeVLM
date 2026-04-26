@@ -287,6 +287,37 @@ Use the experiment matrix runner when you want one summary table that records:
 - precision or optimization variant
 - timing deltas against an `always_on + fp32` baseline
 
+## Backend Comparison
+
+Use the backend comparison runner when you want one package that compares:
+
+- PyTorch `fp32`
+- PyTorch `fp16`
+- TensorRT `fp16`
+
+across the same source modes and pipeline modes, while also recording the exact engine path and cross-backend delta columns.
+
+Example:
+
+```bash
+./.venv/bin/python tools/runtime_backend_compare.py \
+  --video sample_videos/hit.mp4 \
+  --source-modes offline,live_replay \
+  --modes always_on,motion_person_sia \
+  --pytorch-precisions fp32,fp16 \
+  --include-tensorrt \
+  --trt-engine-path results/tensorrt_vision/fp16_check/sia_vision_fp16.engine \
+  --max-frames 120 \
+  --no-render \
+  --output-dir results/runtime/backend_compare_hit_smoke
+```
+
+Expected top-level artifacts:
+
+- `comparison_summary.csv`
+- `comparison_summary.json`
+- `runs/`
+
 ### Offline + Live-Replay Matrix
 
 ```bash
