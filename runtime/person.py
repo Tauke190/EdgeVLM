@@ -13,6 +13,7 @@ class PersonGate:
         device,
         stride,
         cooldown_frames,
+        min_on_time,
         hit_threshold,
         scale,
         resize_width,
@@ -22,6 +23,8 @@ class PersonGate:
             raise ValueError("person_stride must be >= 1.")
         if cooldown_frames < 0:
             raise ValueError("person_cooldown_frames must be >= 0.")
+        if min_on_time < 0:
+            raise ValueError("person_min_on_time must be >= 0.")
         if min_box_area < 0:
             raise ValueError("person_min_box_area must be >= 0.")
 
@@ -32,6 +35,7 @@ class PersonGate:
         self.device = str(device)
         self.stride = int(stride)
         self.cooldown_frames = int(cooldown_frames)
+        self.min_on_time = int(min_on_time)
         self.hit_threshold = float(hit_threshold)
         self.scale = float(scale)
         self.resize_width = int(resize_width)
@@ -41,6 +45,7 @@ class PersonGate:
         self.frames_since_positive = self.cooldown_frames + 1
         self.cached_boxes = []
         self.cached_scores = []
+        self.active_frame_age = 0
 
         self.use_fp16 = self.precision == "fp16" and self.device.startswith("cuda")
         if self.precision == "fp16" and not self.use_fp16:
@@ -80,6 +85,7 @@ class PersonGate:
         self.frames_since_positive = self.cooldown_frames + 1
         self.cached_boxes = []
         self.cached_scores = []
+        self.active_frame_age = 0
 
     def _prepare_frame(self, frame):
         frame_height, frame_width = frame.shape[:2]
@@ -163,6 +169,19 @@ class PersonGate:
             }
 
         self.eligible_frame_count += 1
+        if self.cached_boxes and self.active_frame_age < self.min_on_time:
+            self.active_frame_age += 1
+            return {
+                "person_detected": True,
+                "person_active": True,
+                "person_boxes": list(self.cached_boxes),
+                "person_scores": list(self.cached_scores),
+                "person_detector": self.detector_name,
+                "person_detector_ran": False,
+            }
+
+        boxes = []
+        scores = []
         should_run_detector = ((self.eligible_frame_count - 1) % self.stride) == 0
         if should_run_detector:
             boxes, scores = self._detect_people(frame)
@@ -170,6 +189,7 @@ class PersonGate:
                 self.cached_boxes = boxes
                 self.cached_scores = scores
                 self.frames_since_positive = 0
+                self.active_frame_age = 0
             else:
                 self.frames_since_positive += 1
         elif self.cached_boxes:
@@ -178,6 +198,7 @@ class PersonGate:
         if self.cached_boxes and self.frames_since_positive > self.cooldown_frames:
             self.cached_boxes = []
             self.cached_scores = []
+            self.active_frame_age = 0
 
         person_active = bool(self.cached_boxes)
         return {

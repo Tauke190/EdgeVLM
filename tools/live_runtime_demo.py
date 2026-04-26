@@ -45,6 +45,8 @@ def parse_args():
     parser.add_argument("--adaptive-sia-smoothing", type=float, help="EMA smoothing factor for adaptive active-loop timing.")
     parser.add_argument("--adaptive-sia-min-fps", type=float, help="Minimum adaptive SiA FPS cap after warmup.")
     parser.add_argument("--adaptive-sia-max-fps", type=float, help="Maximum adaptive SiA FPS cap after warmup.")
+    parser.add_argument("--motion-min-on-time", type=int, help="Minimum number of frames to keep the motion gate open before allowing it to close.")
+    parser.add_argument("--person-min-on-time", type=int, help="Minimum number of frames to keep the person gate open before allowing it to close.")
     parser.add_argument("--output-root", help="Optional override for the output root.")
     parser.add_argument("--output-dir", help="Optional explicit run directory for this invocation.")
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from the source.")
@@ -89,6 +91,10 @@ def build_raw_config(args):
         raw_config["adaptive_sia_min_fps"] = args.adaptive_sia_min_fps
     if args.adaptive_sia_max_fps is not None:
         raw_config["adaptive_sia_max_fps"] = args.adaptive_sia_max_fps
+    if args.motion_min_on_time is not None:
+        raw_config["motion_min_on_time"] = args.motion_min_on_time
+    if args.person_min_on_time is not None:
+        raw_config["person_min_on_time"] = args.person_min_on_time
     if args.output_root:
         raw_config["output_root"] = args.output_root
     if args.max_frames is not None:

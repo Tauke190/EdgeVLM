@@ -3,12 +3,15 @@ import numpy as np
 
 
 class MotionGate:
-    def __init__(self, threshold_area, motion_frames, cooldown_frames, blur_kernel, learning_rate):
+    def __init__(self, threshold_area, motion_frames, cooldown_frames, min_on_time, blur_kernel, learning_rate):
         if blur_kernel % 2 == 0:
             raise ValueError("motion_blur_kernel must be odd.")
+        if min_on_time < 0:
+            raise ValueError("motion_min_on_time must be >= 0.")
         self.threshold_area = int(threshold_area)
         self.motion_frames = int(motion_frames)
         self.cooldown_frames = int(cooldown_frames)
+        self.min_on_time = int(min_on_time)
         self.blur_kernel = int(blur_kernel)
         self.learning_rate = float(learning_rate)
         self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(detectShadows=True)
@@ -18,8 +21,18 @@ class MotionGate:
         self.cooldown_count = 0
         self.motion_active = False
         self.motion_roi = None
+        self.active_frame_age = 0
 
     def update(self, frame):
+        if self.motion_active and self.active_frame_age < self.min_on_time:
+            self.active_frame_age += 1
+            self.cooldown_count = 0
+            return {
+                "motion_detected": True,
+                "motion_active": True,
+                "motion_roi": self.motion_roi,
+            }
+
         blurred = cv2.GaussianBlur(frame, (self.blur_kernel, self.blur_kernel), 0)
         fg_mask = self.bg_subtractor.apply(blurred, learningRate=self.learning_rate)
         fg_mask[fg_mask == 127] = 0
@@ -33,6 +46,8 @@ class MotionGate:
         if motion_detected:
             self.motion_frame_count += 1
             if self.motion_frame_count >= self.motion_frames:
+                if not self.motion_active:
+                    self.active_frame_age = 0
                 self.motion_active = True
             self.cooldown_count = 0
         else:
@@ -43,6 +58,7 @@ class MotionGate:
             if self.cooldown_count >= self.cooldown_frames:
                 self.motion_active = False
                 self.cooldown_count = 0
+                self.active_frame_age = 0
 
         self.motion_roi = None
         if self.motion_active and valid_contours:

@@ -48,6 +48,7 @@ class RuntimeConfig:
     motion_threshold_area: int = 1000
     motion_frames: int = 3
     motion_cooldown_frames: int = 60
+    motion_min_on_time: int = 0
     motion_blur_kernel: int = 5
     motion_learning_rate: float = 0.001
     person_detector: str = "yolov8n"
@@ -56,6 +57,7 @@ class RuntimeConfig:
     person_precision: str = "fp32"
     person_stride: int = 3
     person_cooldown_frames: int = 6
+    person_min_on_time: int = 0
     person_hit_threshold: float = 0.0
     person_scale: float = 1.05
     person_resize_width: int = 320
@@ -132,6 +134,7 @@ class RuntimeConfig:
             motion_threshold_area=int(payload.get("motion_threshold_area", 1000)),
             motion_frames=int(payload.get("motion_frames", 3)),
             motion_cooldown_frames=int(payload.get("motion_cooldown_frames", 60)),
+            motion_min_on_time=int(payload.get("motion_min_on_time", 0)),
             motion_blur_kernel=int(payload.get("motion_blur_kernel", 5)),
             motion_learning_rate=float(payload.get("motion_learning_rate", 0.001)),
             person_detector=payload.get("person_detector", "yolov8n"),
@@ -140,6 +143,7 @@ class RuntimeConfig:
             person_precision=payload.get("person_precision", "fp32"),
             person_stride=int(payload.get("person_stride", 3)),
             person_cooldown_frames=int(payload.get("person_cooldown_frames", 6)),
+            person_min_on_time=int(payload.get("person_min_on_time", 0)),
             person_hit_threshold=float(payload.get("person_hit_threshold", 0.0)),
             person_scale=float(payload.get("person_scale", 1.05)),
             person_resize_width=int(payload.get("person_resize_width", 320)),

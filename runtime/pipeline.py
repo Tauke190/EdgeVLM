@@ -25,6 +25,7 @@ class AlwaysOnSIAPipeline:
                 threshold_area=config.motion_threshold_area,
                 motion_frames=config.motion_frames,
                 cooldown_frames=config.motion_cooldown_frames,
+                min_on_time=config.motion_min_on_time,
                 blur_kernel=config.motion_blur_kernel,
                 learning_rate=config.motion_learning_rate,
             )
@@ -37,6 +38,7 @@ class AlwaysOnSIAPipeline:
                 device=config.device,
                 stride=config.person_stride,
                 cooldown_frames=config.person_cooldown_frames,
+                min_on_time=config.person_min_on_time,
                 hit_threshold=config.person_hit_threshold,
                 scale=config.person_scale,
                 resize_width=config.person_resize_width,
