@@ -47,6 +47,7 @@ class AlwaysOnSIAPipeline:
         self.prev_motion_active = False
         self.prev_person_active = False
         self.prev_sia_active = False
+        self.last_completed_predictions = None
 
     def _render_in_pipeline_enabled(self):
         return self.config.render_enabled and self.config.mode != "live"
@@ -62,6 +63,43 @@ class AlwaysOnSIAPipeline:
             "label_decode_s": 0.0,
             "render_s": 0.0,
         }
+
+    def _freeze_predictions(self, inference_result):
+        boxes = []
+        for box in inference_result.get("boxes", []):
+            if hasattr(box, "detach"):
+                boxes.append([int(value) for value in box.detach().cpu().tolist()])
+            else:
+                boxes.append([int(value) for value in box])
+        labels = [list(label_list) for label_list in inference_result.get("labels", [])]
+        scores = []
+        for score_list in inference_result.get("scores", []):
+            scores.append([float(score) for score in score_list])
+        return {
+            "boxes": boxes,
+            "labels": labels,
+            "scores": scores,
+        }
+
+    def _render_with_persisted_predictions(self, frame):
+        if not self._render_in_pipeline_enabled():
+            return None, 0.0
+        maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
+        render_start = time.perf_counter()
+        rendered_frame = frame.copy()
+        if self.last_completed_predictions:
+            rendered_frame = draw_predictions(
+                rendered_frame,
+                self.last_completed_predictions["boxes"],
+                self.last_completed_predictions["labels"],
+                self.last_completed_predictions["scores"],
+                self.color,
+                self.config.font_scale,
+                self.config.line_thickness,
+            )
+        maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
+        render_time = time.perf_counter() - render_start
+        return rendered_frame, render_time
 
     def _scheduler_state(self, buffer_ready, gate_state, active, stride_wait=False, cooldown=False, rate_wait=False):
         if active:
@@ -169,15 +207,19 @@ class AlwaysOnSIAPipeline:
 
         if not buffer_ready:
             scheduler_state = self._scheduler_state(buffer_ready, gate_state, active=False)
+            rendered_frame, render_time = self._render_with_persisted_predictions(frame)
             return self._finalize_result({
                 "active": False,
                 "output_ready": False,
                 "scheduler_state": scheduler_state,
                 "sia_trigger_reason": None,
-                "rendered_frame": frame.copy() if self._render_in_pipeline_enabled() else None,
+                "rendered_frame": rendered_frame,
                 "detections": 0,
                 "gate_state": gate_state,
-                "timings": self._timing_stub(preprocess_time),
+                "timings": {
+                    **self._timing_stub(preprocess_time),
+                    "render_s": render_time,
+                },
             }, gate_state, active=False)
 
         if self.config.pipeline_mode == "motion_only" and not gate_state["motion_active"]:
@@ -187,15 +229,19 @@ class AlwaysOnSIAPipeline:
                 active=False,
                 cooldown=cooldown_active,
             )
+            rendered_frame, render_time = self._render_with_persisted_predictions(self.buffer.render_frame())
             return self._finalize_result({
                 "active": False,
                 "output_ready": True,
                 "scheduler_state": scheduler_state,
                 "sia_trigger_reason": None,
-                "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
+                "rendered_frame": rendered_frame,
                 "detections": 0,
                 "gate_state": gate_state,
-                "timings": self._timing_stub(preprocess_time),
+                "timings": {
+                    **self._timing_stub(preprocess_time),
+                    "render_s": render_time,
+                },
             }, gate_state, active=False)
         if self.config.pipeline_mode == "person_only" and not gate_state["person_active"]:
             scheduler_state = self._scheduler_state(
@@ -204,15 +250,19 @@ class AlwaysOnSIAPipeline:
                 active=False,
                 cooldown=cooldown_active,
             )
+            rendered_frame, render_time = self._render_with_persisted_predictions(self.buffer.render_frame())
             return self._finalize_result({
                 "active": False,
                 "output_ready": True,
                 "scheduler_state": scheduler_state,
                 "sia_trigger_reason": None,
-                "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
+                "rendered_frame": rendered_frame,
                 "detections": 0,
                 "gate_state": gate_state,
-                "timings": self._timing_stub(preprocess_time),
+                "timings": {
+                    **self._timing_stub(preprocess_time),
+                    "render_s": render_time,
+                },
             }, gate_state, active=False)
         if self.config.pipeline_mode == "motion_person_sia":
             if not gate_state["motion_active"] or not gate_state["person_active"]:
@@ -222,15 +272,19 @@ class AlwaysOnSIAPipeline:
                     active=False,
                     cooldown=cooldown_active,
                 )
+                rendered_frame, render_time = self._render_with_persisted_predictions(self.buffer.render_frame())
                 return self._finalize_result({
                     "active": False,
                     "output_ready": True,
                     "scheduler_state": scheduler_state,
                     "sia_trigger_reason": None,
-                    "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
+                    "rendered_frame": rendered_frame,
                     "detections": 0,
                     "gate_state": gate_state,
-                    "timings": self._timing_stub(preprocess_time),
+                    "timings": {
+                        **self._timing_stub(preprocess_time),
+                        "render_s": render_time,
+                    },
                 }, gate_state, active=False)
             trigger_reason = self._sia_trigger_reason(gate_state)
             if trigger_reason is None:
@@ -240,15 +294,19 @@ class AlwaysOnSIAPipeline:
                     active=False,
                     stride_wait=True,
                 )
+                rendered_frame, render_time = self._render_with_persisted_predictions(self.buffer.render_frame())
                 return self._finalize_result({
                     "active": False,
                     "output_ready": True,
                     "scheduler_state": scheduler_state,
                     "sia_trigger_reason": None,
-                    "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
+                    "rendered_frame": rendered_frame,
                     "detections": 0,
                     "gate_state": gate_state,
-                    "timings": self._timing_stub(preprocess_time),
+                    "timings": {
+                        **self._timing_stub(preprocess_time),
+                        "render_s": render_time,
+                    },
                 }, gate_state, active=False)
         else:
             trigger_reason = "always_allowed"
@@ -260,15 +318,19 @@ class AlwaysOnSIAPipeline:
                 active=False,
                 rate_wait=True,
             )
+            rendered_frame, render_time = self._render_with_persisted_predictions(self.buffer.render_frame())
             return self._finalize_result({
                 "active": False,
                 "output_ready": True,
                 "scheduler_state": scheduler_state,
                 "sia_trigger_reason": None,
-                "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
+                "rendered_frame": rendered_frame,
                 "detections": 0,
                 "gate_state": gate_state,
-                "timings": self._timing_stub(preprocess_time),
+                "timings": {
+                    **self._timing_stub(preprocess_time),
+                    "render_s": render_time,
+                },
             }, gate_state, active=False)
 
         clip_tensor = build_clip_tensor(
@@ -278,25 +340,14 @@ class AlwaysOnSIAPipeline:
             self.core.input_use_fp16,
         )
         inference_result = self.core.infer_clip(clip_tensor, frame_size)
+        self.last_completed_predictions = self._freeze_predictions(inference_result)
         self.last_sia_push_index = self.buffer.total_pushed
         self.last_sia_wall_time = frame_start_s
         rendered_frame = None
         render_time = 0.0
         if self._render_in_pipeline_enabled():
             render_base = self.buffer.render_frame()
-            maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
-            render_start = time.perf_counter()
-            rendered_frame = draw_predictions(
-                render_base,
-                inference_result["boxes"],
-                inference_result["labels"],
-                inference_result["scores"],
-                self.color,
-                self.config.font_scale,
-                self.config.line_thickness,
-            )
-            maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
-            render_time = time.perf_counter() - render_start
+            rendered_frame, render_time = self._render_with_persisted_predictions(render_base)
         return self._finalize_result({
             "active": True,
             "output_ready": True,

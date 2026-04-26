@@ -111,17 +111,38 @@ def build_status_lines(result):
     return lines
 
 
-def build_output_frame(frame, result, overlay_color, config):
+def freeze_predictions(result):
+    boxes = []
+    for box in result.get("boxes", []):
+        if hasattr(box, "detach"):
+            boxes.append([int(value) for value in box.detach().cpu().tolist()])
+        else:
+            boxes.append([int(value) for value in box])
+    labels = [list(label_list) for label_list in result.get("labels", [])]
+    scores = []
+    for score_list in result.get("scores", []):
+        scores.append([float(score) for score in score_list])
+    return {
+        "boxes": boxes,
+        "labels": labels,
+        "scores": scores,
+    }
+
+
+def build_output_frame(frame, result, overlay_color, config, persisted_predictions=None):
     if not config.render_enabled and not config.show_preview:
         return None
 
     output_frame = frame.copy()
+    predictions = persisted_predictions
     if result["active"]:
+        predictions = freeze_predictions(result)
+    if predictions:
         output_frame = draw_predictions(
             output_frame,
-            result["boxes"],
-            result["labels"],
-            result["scores"],
+            predictions["boxes"],
+            predictions["labels"],
+            predictions["scores"],
             overlay_color,
             config.font_scale,
             config.line_thickness,
@@ -206,6 +227,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
     activation_latency_frames = []
     last_motion_start_frame = None
     source_exhausted = False
+    last_completed_predictions = None
 
     def enqueue_frame(frame, capture_index, capture_s):
         try:
@@ -328,7 +350,15 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
 
             loop_start = time.perf_counter()
             result = pipeline.process_frame(frame, (frame_height, frame_width))
-            output_frame = build_output_frame(frame, result, overlay_color, config)
+            if result["active"]:
+                last_completed_predictions = freeze_predictions(result)
+            output_frame = build_output_frame(
+                frame,
+                result,
+                overlay_color,
+                config,
+                persisted_predictions=last_completed_predictions,
+            )
 
             if result["active"]:
                 active_frames += 1
