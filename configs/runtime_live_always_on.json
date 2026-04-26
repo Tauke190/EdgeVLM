@@ -39,5 +39,6 @@
   "render_enabled": true,
   "show_preview": false,
   "simulate_live": false,
-  "drop_frames": false
+  "drop_frames": false,
+  "sia_target_fps": 9
 }
