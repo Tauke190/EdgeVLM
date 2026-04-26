@@ -23,18 +23,32 @@ def decode_text_labels(label_ids_per_box, score_values_per_box, captions, top_k_
         if top_k_labels is not None:
             label_ids = label_ids[:top_k_labels]
             score_values = score_values[:top_k_labels]
-        decoded_labels.append([captions[index] for index in label_ids])
-        decoded_scores.append([float(score) for score in score_values])
+        if torch.is_tensor(label_ids):
+            label_indices = label_ids.tolist()
+        else:
+            label_indices = list(label_ids)
+        decoded_labels.append([captions[index] for index in label_indices])
+        if torch.is_tensor(score_values):
+            decoded_scores.append(score_values.tolist())
+        else:
+            decoded_scores.append([float(score) for score in score_values])
     return decoded_labels, decoded_scores
 
 
 class SIARuntimeCore:
     def __init__(self, config):
         self.config = config
+        self.backend_name = config.backend_name
         self.device = config.device if config.device != "cuda" or torch.cuda.is_available() else "cpu"
-        self.use_fp16 = config.precision == "fp16" and str(self.device).startswith("cuda")
-        if config.precision == "fp16" and not self.use_fp16:
+        self.device_is_cuda = str(self.device).startswith("cuda")
+        self.precision_uses_cuda_fp16 = config.precision == "fp16" and self.device_is_cuda
+        self.input_use_fp16 = self.backend_name == "pytorch" and self.precision_uses_cuda_fp16 and not config.autocast
+        if config.precision == "fp16" and not self.precision_uses_cuda_fp16:
             raise RuntimeError("FP16 precision is only supported on CUDA in the runtime core.")
+        if self.backend_name == "tensorrt" and not self.device_is_cuda:
+            raise RuntimeError("TensorRT backend is only supported on CUDA in the runtime core.")
+        if self.backend_name == "tensorrt" and not config.trt_engine_path:
+            raise RuntimeError("TensorRT backend requires `trt_engine_path` in the runtime config.")
 
         self.model = get_sia(
             size=config.model_size,
@@ -48,14 +62,19 @@ class SIARuntimeCore:
             strict=False,
         )
         self.model.to(self.device)
-        if self.use_fp16 and not config.autocast:
+        if self.input_use_fp16:
             self.model.half()
         self.model.eval()
+        self.vision_backend = None
+        if self.backend_name == "tensorrt":
+            from runtime.tensorrt_backend import TensorRTVisionBackend
 
-        self.captions = load_actions(config.actions_json)
+            self.vision_backend = TensorRTVisionBackend(config.trt_engine_path, self.device)
+
+        self.captions = tuple(load_actions(config.actions_json))
         text_context = (
             torch.autocast(device_type="cuda", dtype=torch.float16)
-            if self.use_fp16 and config.autocast
+            if self.precision_uses_cuda_fp16 and config.autocast
             else nullcontext()
         )
         with torch.no_grad():
@@ -77,15 +96,18 @@ class SIARuntimeCore:
         maybe_cuda_synchronize(self.device, self.config.sync_cuda_timing)
         inference_start = time.perf_counter()
         with torch.no_grad():
-            inference_context = (
-                torch.autocast(device_type="cuda", dtype=torch.float16)
-                if self.use_fp16 and self.config.autocast
-                else nullcontext()
-            )
-            with inference_context:
-                outputs = self.model.encode_vision(clip_tensor)
-                similarity_text_embeds = self.text_embeds.to(dtype=outputs["pred_logits"].dtype)
-                outputs["pred_logits"] = F.normalize(outputs["pred_logits"], dim=-1) @ similarity_text_embeds.T
+            if self.backend_name == "tensorrt":
+                outputs = self.vision_backend.infer(clip_tensor)
+            else:
+                inference_context = (
+                    torch.autocast(device_type="cuda", dtype=torch.float16)
+                    if self.precision_uses_cuda_fp16 and self.config.autocast
+                    else nullcontext()
+                )
+                with inference_context:
+                    outputs = self.model.encode_vision(clip_tensor)
+            similarity_text_embeds = self.text_embeds.to(dtype=outputs["pred_logits"].dtype)
+            outputs["pred_logits"] = F.normalize(outputs["pred_logits"], dim=-1) @ similarity_text_embeds.T
             outputs = {
                 key: value.float() if torch.is_tensor(value) and value.is_floating_point() else value
                 for key, value in outputs.items()

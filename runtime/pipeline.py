@@ -43,9 +43,13 @@ class AlwaysOnSIAPipeline:
                 min_box_area=config.person_min_box_area,
             )
         self.last_sia_push_index = None
+        self.last_sia_wall_time = None
         self.prev_motion_active = False
         self.prev_person_active = False
         self.prev_sia_active = False
+
+    def _render_in_pipeline_enabled(self):
+        return self.config.render_enabled and self.config.mode != "live"
 
     def _timing_stub(self, preprocess_time):
         return {
@@ -59,9 +63,11 @@ class AlwaysOnSIAPipeline:
             "render_s": 0.0,
         }
 
-    def _scheduler_state(self, buffer_ready, gate_state, active, stride_wait=False, cooldown=False):
+    def _scheduler_state(self, buffer_ready, gate_state, active, stride_wait=False, cooldown=False, rate_wait=False):
         if active:
             return "sia_active"
+        if rate_wait:
+            return "sia_rate_wait"
         if stride_wait:
             return "sia_stride_wait"
         if cooldown:
@@ -116,6 +122,13 @@ class AlwaysOnSIAPipeline:
             return not motion_active and (self.prev_motion_active or self.prev_person_active or self.prev_sia_active)
         return False
 
+    def _sia_rate_wait_active(self, now_s):
+        target_fps = float(self.config.sia_target_fps)
+        if target_fps <= 0.0 or self.last_sia_wall_time is None:
+            return False
+        min_interval_s = 1.0 / target_fps
+        return (now_s - self.last_sia_wall_time) < min_interval_s
+
     def _finalize_result(self, result, gate_state, active):
         self.prev_motion_active = bool(gate_state.get("motion_active"))
         self.prev_person_active = bool(gate_state.get("person_active"))
@@ -123,6 +136,7 @@ class AlwaysOnSIAPipeline:
         return result
 
     def process_frame(self, frame, frame_size):
+        frame_start_s = time.perf_counter()
         preprocess_start = time.perf_counter()
         original_chw = frame.transpose(2, 0, 1)
         resized = resize_frame(frame, self.config.img_width, self.config.img_height)
@@ -160,7 +174,7 @@ class AlwaysOnSIAPipeline:
                 "output_ready": False,
                 "scheduler_state": scheduler_state,
                 "sia_trigger_reason": None,
-                "rendered_frame": frame.copy(),
+                "rendered_frame": frame.copy() if self._render_in_pipeline_enabled() else None,
                 "detections": 0,
                 "gate_state": gate_state,
                 "timings": self._timing_stub(preprocess_time),
@@ -178,7 +192,7 @@ class AlwaysOnSIAPipeline:
                 "output_ready": True,
                 "scheduler_state": scheduler_state,
                 "sia_trigger_reason": None,
-                "rendered_frame": self.buffer.render_frame(),
+                "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
                 "detections": 0,
                 "gate_state": gate_state,
                 "timings": self._timing_stub(preprocess_time),
@@ -195,7 +209,7 @@ class AlwaysOnSIAPipeline:
                 "output_ready": True,
                 "scheduler_state": scheduler_state,
                 "sia_trigger_reason": None,
-                "rendered_frame": self.buffer.render_frame(),
+                "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
                 "detections": 0,
                 "gate_state": gate_state,
                 "timings": self._timing_stub(preprocess_time),
@@ -213,7 +227,7 @@ class AlwaysOnSIAPipeline:
                     "output_ready": True,
                     "scheduler_state": scheduler_state,
                     "sia_trigger_reason": None,
-                    "rendered_frame": self.buffer.render_frame(),
+                    "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
                     "detections": 0,
                     "gate_state": gate_state,
                     "timings": self._timing_stub(preprocess_time),
@@ -231,7 +245,7 @@ class AlwaysOnSIAPipeline:
                     "output_ready": True,
                     "scheduler_state": scheduler_state,
                     "sia_trigger_reason": None,
-                    "rendered_frame": self.buffer.render_frame(),
+                    "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
                     "detections": 0,
                     "gate_state": gate_state,
                     "timings": self._timing_stub(preprocess_time),
@@ -239,29 +253,50 @@ class AlwaysOnSIAPipeline:
         else:
             trigger_reason = "always_allowed"
 
+        if self._sia_rate_wait_active(frame_start_s):
+            scheduler_state = self._scheduler_state(
+                buffer_ready,
+                gate_state,
+                active=False,
+                rate_wait=True,
+            )
+            return self._finalize_result({
+                "active": False,
+                "output_ready": True,
+                "scheduler_state": scheduler_state,
+                "sia_trigger_reason": None,
+                "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
+                "detections": 0,
+                "gate_state": gate_state,
+                "timings": self._timing_stub(preprocess_time),
+            }, gate_state, active=False)
+
         clip_tensor = build_clip_tensor(
             self.buffer.sampled_clip(),
             self.normalizer,
             self.core.device,
-            self.core.use_fp16 and not self.config.autocast,
+            self.core.input_use_fp16,
         )
         inference_result = self.core.infer_clip(clip_tensor, frame_size)
         self.last_sia_push_index = self.buffer.total_pushed
-        render_base = self.buffer.render_frame()
-
-        maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
-        render_start = time.perf_counter()
-        rendered_frame = draw_predictions(
-            render_base,
-            inference_result["boxes"],
-            inference_result["labels"],
-            inference_result["scores"],
-            self.color,
-            self.config.font_scale,
-            self.config.line_thickness,
-        )
-        maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
-        render_time = time.perf_counter() - render_start
+        self.last_sia_wall_time = frame_start_s
+        rendered_frame = None
+        render_time = 0.0
+        if self._render_in_pipeline_enabled():
+            render_base = self.buffer.render_frame()
+            maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
+            render_start = time.perf_counter()
+            rendered_frame = draw_predictions(
+                render_base,
+                inference_result["boxes"],
+                inference_result["labels"],
+                inference_result["scores"],
+                self.color,
+                self.config.font_scale,
+                self.config.line_thickness,
+            )
+            maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
+            render_time = time.perf_counter() - render_start
         return self._finalize_result({
             "active": True,
             "output_ready": True,

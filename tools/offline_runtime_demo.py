@@ -49,6 +49,9 @@ def parse_args():
     parser.add_argument("--config", required=True, help="Path to a runtime config JSON file.")
     parser.add_argument("--video", help="Optional override for the input video path.")
     parser.add_argument("--weights", help="Optional override for the model weights path.")
+    parser.add_argument("--precision", choices=["fp32", "fp16"], help="Optional precision override.")
+    parser.add_argument("--backend-name", choices=["pytorch", "tensorrt"], help="Optional runtime backend override.")
+    parser.add_argument("--trt-engine-path", help="Optional TensorRT engine override when using the tensorrt backend.")
     parser.add_argument("--output-root", help="Optional override for the output root.")
     parser.add_argument("--output-dir", help="Optional explicit run directory for this invocation.")
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from the source video.")
@@ -62,6 +65,13 @@ def build_raw_config(args):
         raw_config["video_path"] = args.video
     if args.weights:
         raw_config["weights_path"] = args.weights
+    if args.precision:
+        raw_config["precision"] = args.precision
+        raw_config["autocast"] = args.precision == "fp16"
+    if args.backend_name:
+        raw_config["backend_name"] = args.backend_name
+    if args.trt_engine_path:
+        raw_config["trt_engine_path"] = args.trt_engine_path
     if args.output_root:
         raw_config["output_root"] = args.output_root
     if args.max_frames is not None:
@@ -356,9 +366,13 @@ def run_offline_runtime(
             writer.release()
 
     elapsed_s = time.perf_counter() - start_wall
+    active_loop_values = collector.series["active_loop"]
+    active_loop_total_s = sum(active_loop_values)
     metrics = {
         "mode": config.mode,
         "pipeline_mode": config.pipeline_mode,
+        "backend_name": config.backend_name,
+        "optimization_label": config.optimization_label,
         "video_path": config.video_path,
         "weights_path": config.weights_path,
         "git_commit": infer_git_commit(),
@@ -384,12 +398,17 @@ def run_offline_runtime(
         "motion_event_count": motion_event_count,
         "person_event_count": person_event_count,
         "sia_activation_count": sia_activation_count,
+        "sia_target_fps": config.sia_target_fps,
         "sia_stride_wait_frames": sia_stride_wait_frames,
         "sia_trigger_reason_counts": dict(sorted(sia_trigger_reason_counts.items())),
         "motion_to_sia_latency_frames": activation_latency_frames,
         "scheduler_state_counts": dict(sorted(scheduler_state_counts.items())),
         "elapsed_s": round(elapsed_s, 3),
-        "effective_fps": round(clips_processed / elapsed_s, 3) if elapsed_s > 0 else None,
+        "effective_fps": round(frame_count / elapsed_s, 3) if elapsed_s > 0 else None,
+        "effective_input_fps": round(frame_count / elapsed_s, 3) if elapsed_s > 0 else None,
+        "effective_active_fps": round(active_frames / active_loop_total_s, 3)
+        if active_loop_total_s > 0
+        else None,
         "source_fps": round(source_fps, 3) if source_fps and source_fps > 0 else None,
         "render_enabled": config.render_enabled,
         "monitor_source": system_monitor.source,
@@ -401,9 +420,12 @@ def run_offline_runtime(
             **raw_config,
             "resolved_device": str(pipeline.core.device),
             "pipeline_mode": config.pipeline_mode,
+            "backend_name": config.backend_name,
+            "optimization_label": config.optimization_label,
             "precision": config.precision,
             "autocast": config.autocast,
             "top_k_labels": config.top_k_labels,
+            "sia_target_fps": config.sia_target_fps,
             "sync_cuda_timing": config.sync_cuda_timing,
             "render_enabled": config.render_enabled,
         },
@@ -419,11 +441,14 @@ def run_offline_runtime(
             f"Video: {config.video_path}",
             f"Weights: {config.weights_path}",
             f"Pipeline mode: {config.pipeline_mode}",
+            f"Backend: {config.backend_name}",
+            f"Optimization label: {config.optimization_label or 'none'}",
             f"Device: {pipeline.core.device}",
             f"Precision: {config.precision}",
             f"Autocast enabled: {config.autocast}",
             f"Actions: {len(pipeline.core.captions)}",
             f"Top-k labels per box: {config.top_k_labels if config.top_k_labels is not None else 'all'}",
+            f"SiA target FPS cap: {config.sia_target_fps}",
             f"CUDA timing synchronization: {config.sync_cuda_timing}",
             f"Monitor source: {system_monitor.source}",
             f"Frames read: {frame_count}",
@@ -442,7 +467,8 @@ def run_offline_runtime(
             f"Motion-to-SiA latency frames: {activation_latency_frames}",
             f"Scheduler state counts: {dict(sorted(scheduler_state_counts.items()))}",
             f"Elapsed seconds: {metrics['elapsed_s']}",
-            f"Effective FPS: {metrics['effective_fps']}",
+            f"Effective input FPS: {metrics['effective_input_fps']}",
+            f"Effective active FPS: {metrics['effective_active_fps']}",
             f"Inference mean ms: {metrics['timings']['inference']['mean_ms']}",
             f"Inference p95 ms: {metrics['timings']['inference']['p95_ms']}",
             f"Postprocess mean ms: {metrics['timings']['postprocess']['mean_ms']}",

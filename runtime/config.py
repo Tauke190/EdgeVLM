@@ -8,6 +8,9 @@ class RuntimeConfig:
     weights_path: str
     actions_json: str
     pipeline_mode: str = "always_on"
+    backend_name: str = "pytorch"
+    trt_engine_path: str | None = None
+    optimization_label: str | None = None
     device: str = "cuda"
     precision: str = "fp32"
     autocast: bool = False
@@ -36,6 +39,9 @@ class RuntimeConfig:
     show_preview: bool = False
     video_path: str | None = None
     video_device: int = 0
+    simulate_live: bool = False
+    drop_frames: bool = False
+    source_fps_override: float | None = None
     max_frames: int | None = None
     max_seconds: float | None = None
     motion_threshold_area: int = 1000
@@ -53,6 +59,7 @@ class RuntimeConfig:
     person_scale: float = 1.05
     person_resize_width: int = 320
     person_min_box_area: int = 4096
+    sia_target_fps: float = 9.0
     sia_min_new_frames: int = 9
     sia_retrigger_on_motion_edge: bool = True
     sia_retrigger_on_person_edge: bool = True
@@ -68,11 +75,18 @@ class RuntimeConfig:
             raise ValueError(
                 f"Unsupported pipeline_mode '{pipeline_mode}'. Expected one of: {sorted(valid_pipeline_modes)}"
             )
+        backend_name = payload.get("backend_name", "pytorch")
+        valid_backends = {"pytorch", "tensorrt"}
+        if backend_name not in valid_backends:
+            raise ValueError(f"Unsupported backend_name '{backend_name}'. Expected one of: {sorted(valid_backends)}")
         return cls(
             mode=payload["mode"],
             weights_path=payload["weights_path"],
             actions_json=payload["actions_json"],
             pipeline_mode=pipeline_mode,
+            backend_name=backend_name,
+            trt_engine_path=payload.get("trt_engine_path"),
+            optimization_label=payload.get("optimization_label"),
             device=payload.get("device", "cuda"),
             precision=payload.get("precision", "fp32"),
             autocast=bool(payload.get("autocast", payload.get("precision", "fp32") == "fp16")),
@@ -101,6 +115,9 @@ class RuntimeConfig:
             show_preview=bool(payload.get("show_preview", False)),
             video_path=payload.get("video_path"),
             video_device=int(payload.get("video_device", 0)),
+            simulate_live=bool(payload.get("simulate_live", False)),
+            drop_frames=bool(payload.get("drop_frames", False)),
+            source_fps_override=payload.get("source_fps_override"),
             max_frames=payload.get("max_frames"),
             max_seconds=payload.get("max_seconds"),
             motion_threshold_area=int(payload.get("motion_threshold_area", 1000)),
@@ -118,6 +135,7 @@ class RuntimeConfig:
             person_scale=float(payload.get("person_scale", 1.05)),
             person_resize_width=int(payload.get("person_resize_width", 320)),
             person_min_box_area=int(payload.get("person_min_box_area", 4096)),
+            sia_target_fps=float(payload.get("sia_target_fps", 9.0)),
             sia_min_new_frames=int(payload.get("sia_min_new_frames", 9)),
             sia_retrigger_on_motion_edge=bool(payload.get("sia_retrigger_on_motion_edge", True)),
             sia_retrigger_on_person_edge=bool(payload.get("sia_retrigger_on_person_edge", True)),

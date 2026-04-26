@@ -34,6 +34,9 @@ def parse_args():
         help="Search recursively under --video-dir.",
     )
     parser.add_argument("--weights", help="Optional override for the model weights path.")
+    parser.add_argument("--precision", choices=["fp32", "fp16"], help="Optional precision override.")
+    parser.add_argument("--backend-name", choices=["pytorch", "tensorrt"], help="Optional runtime backend override.")
+    parser.add_argument("--trt-engine-path", help="Optional TensorRT engine override when using the tensorrt backend.")
     parser.add_argument("--output-root", help="Optional override for the output root.")
     parser.add_argument("--output-dir", help="Optional explicit suite output directory.")
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from each source video.")
@@ -144,6 +147,8 @@ def matching_completed_run(existing_run, expected_config, run_dir):
         existing_config.get("weights_path") == expected_config.get("weights_path"),
         existing_config.get("max_frames") == expected_config.get("max_frames"),
         existing_config.get("pipeline_mode", "always_on") == expected_config.get("pipeline_mode", "always_on"),
+        existing_config.get("backend_name", "pytorch") == expected_config.get("backend_name", "pytorch"),
+        existing_config.get("trt_engine_path") == expected_config.get("trt_engine_path"),
         bool(existing_config.get("render_enabled", True)) == bool(expected_config.get("render_enabled", True)),
         existing_config.get("precision", expected_config.get("precision")) == expected_config.get("precision"),
         bool(existing_config.get("autocast", expected_config.get("autocast", False)))

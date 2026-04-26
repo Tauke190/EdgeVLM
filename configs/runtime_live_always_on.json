@@ -1,6 +1,6 @@
 {
   "mode": "live",
-  "pipeline_mode": "motion_person_sia",
+  "pipeline_mode": "always_on",
   "video_device": 0,
   "weights_path": "weights/avak_b16_11.pt",
   "actions_json": "gpt/GPT_AVA.json",
@@ -40,23 +40,5 @@
   "show_preview": false,
   "simulate_live": false,
   "drop_frames": false,
-  "motion_threshold_area": 1000,
-  "motion_frames": 3,
-  "motion_cooldown_frames": 60,
-  "motion_blur_kernel": 5,
-  "motion_learning_rate": 0.001,
-  "person_detector": "yolov8n",
-  "person_weights": "weights/yolov8n.pt",
-  "person_threshold": 0.3,
-  "person_precision": "fp32",
-  "person_stride": 3,
-  "person_cooldown_frames": 6,
-  "person_hit_threshold": 0.0,
-  "person_scale": 1.05,
-  "person_resize_width": 320,
-  "person_min_box_area": 4096,
-  "sia_target_fps": 9,
-  "sia_min_new_frames": 9,
-  "sia_retrigger_on_motion_edge": true,
-  "sia_retrigger_on_person_edge": true
+  "sia_target_fps": 9
 }

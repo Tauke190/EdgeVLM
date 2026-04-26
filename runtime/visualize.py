@@ -22,17 +22,20 @@ def resolve_color(name):
 def draw_predictions(frame, boxes, labels, scores, color, font_scale, thickness):
     rendered = frame.copy()
     for box, label_list, score_list in zip(boxes, labels, scores):
-        box_np = box.detach().cpu().numpy()
-        start_point = (int(box_np[0]), int(box_np[1]))
-        end_point = (int(box_np[2]), int(box_np[3]))
+        if hasattr(box, "detach"):
+            x1, y1, x2, y2 = (int(value) for value in box.detach().cpu().tolist())
+        else:
+            x1, y1, x2, y2 = (int(value) for value in box)
+        start_point = (x1, y1)
+        end_point = (x2, y2)
         cv2.rectangle(rendered, start_point, end_point, color, thickness)
         offset = 0
         for label, score in zip(label_list, score_list):
-            text = f"{label} {round(float(score), 2)}"
+            text = f"{label} {float(score):.2f}"
             cv2.putText(
                 rendered,
                 text,
-                (int(box_np[0]) - 5, int(box_np[1]) + offset),
+                (x1 - 5, y1 + offset),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 font_scale,
                 color,
