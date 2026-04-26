@@ -9,6 +9,7 @@ class RuntimeConfig:
     actions_json: str
     pipeline_mode: str = "always_on"
     backend_name: str = "pytorch"
+    trt_engine_path: str | None = None
     optimization_label: str | None = None
     device: str = "cuda"
     precision: str = "fp32"
@@ -73,12 +74,17 @@ class RuntimeConfig:
             raise ValueError(
                 f"Unsupported pipeline_mode '{pipeline_mode}'. Expected one of: {sorted(valid_pipeline_modes)}"
             )
+        backend_name = payload.get("backend_name", "pytorch")
+        valid_backends = {"pytorch", "tensorrt"}
+        if backend_name not in valid_backends:
+            raise ValueError(f"Unsupported backend_name '{backend_name}'. Expected one of: {sorted(valid_backends)}")
         return cls(
             mode=payload["mode"],
             weights_path=payload["weights_path"],
             actions_json=payload["actions_json"],
             pipeline_mode=pipeline_mode,
-            backend_name=payload.get("backend_name", "pytorch"),
+            backend_name=backend_name,
+            trt_engine_path=payload.get("trt_engine_path"),
             optimization_label=payload.get("optimization_label"),
             device=payload.get("device", "cuda"),
             precision=payload.get("precision", "fp32"),

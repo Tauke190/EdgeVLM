@@ -116,6 +116,10 @@ def parse_args():
         help="Backend label recorded into the experiment metadata. Default: pytorch",
     )
     parser.add_argument(
+        "--trt-engine-path",
+        help="TensorRT engine path required when --backend-name=tensorrt.",
+    )
+    parser.add_argument(
         "--variant-prefix",
         default="shared_runtime",
         help="Prefix used when composing optimization_label values.",
@@ -160,6 +164,8 @@ def build_raw_config(args, source_mode, pipeline_mode, precision, video_path):
     raw_config["autocast"] = precision == "fp16"
     raw_config["video_path"] = str(video_path)
     raw_config["backend_name"] = args.backend_name
+    if args.trt_engine_path:
+        raw_config["trt_engine_path"] = args.trt_engine_path
     raw_config["optimization_label"] = f"{args.variant_prefix}_{precision}"
     if args.weights:
         raw_config["weights_path"] = args.weights
@@ -301,6 +307,14 @@ def main():
         raise RuntimeError(f"Unsupported source modes: {invalid_source_modes}")
     if invalid_precisions:
         raise RuntimeError(f"Unsupported precisions: {invalid_precisions}")
+    if args.backend_name == "tensorrt":
+        if not args.trt_engine_path:
+            raise RuntimeError("--trt-engine-path is required when --backend-name=tensorrt.")
+        invalid_trt_precisions = sorted(set(precisions) - {"fp16"})
+        if invalid_trt_precisions:
+            raise RuntimeError(
+                f"TensorRT experiment matrix currently supports only fp16 precision, got: {invalid_trt_precisions}"
+            )
     if invalid_modes:
         raise RuntimeError(f"Unsupported pipeline modes: {invalid_modes}")
 

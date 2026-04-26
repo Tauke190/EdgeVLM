@@ -99,6 +99,7 @@ Use `configs/full_pipeline_runtime.json` with the dedicated benchmark harness:
 - `--glob '*.avi'` or `--glob '*.mp4'` to restrict which files are picked up
 - `--output-dir results/runtime/my_suite` to force a specific suite directory
 - `--weights path/to/checkpoint.pt` to override the model checkpoint
+- `--backend-name tensorrt --trt-engine-path path/to/sia_vision_fp16.engine` to run the shared runtime with the TensorRT vision backend
 - `--resume` to skip videos that already have a matching completed run in the suite directory
 - `--progress-every 60` to control how often frame progress is printed
 - `--continue-on-error` to keep running remaining videos if one input fails
@@ -129,9 +130,23 @@ Important note:
 
 - if you pass `--no-render`, the benchmark still runs and writes metrics, but output videos are intentionally disabled
 - `pipeline_mode` currently supports `always_on`, `motion_only`, `person_only`, and `motion_person_sia`
+- `backend_name` currently supports `pytorch` and `tensorrt`
 - `person_only` now defaults to `YOLOv8n` from `weights/yolov8n.pt`
 - the shared offline benchmark summaries now record `output_ready_frames`, `motion_active_frames`, `person_active_frames`, and `person_detector_frames`
 - full-pipeline runs now also save `event_log.csv` with scheduler transitions and gate edge events
+
+### Offline TensorRT FP16 Example
+
+```bash
+./.venv/bin/python tools/offline_runtime_demo.py \
+  --config configs/runtime_offline_motion_person_sia.json \
+  --video sample_videos/hit.mp4 \
+  --precision fp16 \
+  --backend-name tensorrt \
+  --trt-engine-path results/tensorrt_vision/fp16_check/sia_vision_fp16.engine \
+  --max-frames 120 \
+  --no-render
+```
 
 ## Live Runtime Path
 
@@ -218,6 +233,20 @@ Use this when you want the replay path to stay wall-clock paced even if inferenc
   --simulate-live \
   --drop-frames \
   --target-fps 30 \
+  --no-render
+```
+
+### Live Replay TensorRT FP16 Example
+
+```bash
+./.venv/bin/python tools/live_runtime_demo.py \
+  --config configs/runtime_live.json \
+  --video sample_videos/hit.mp4 \
+  --simulate-live \
+  --precision fp16 \
+  --backend-name tensorrt \
+  --trt-engine-path results/tensorrt_vision/fp16_check/sia_vision_fp16.engine \
+  --max-frames 120 \
   --no-render
 ```
 

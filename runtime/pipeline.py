@@ -243,7 +243,7 @@ class AlwaysOnSIAPipeline:
             self.buffer.sampled_clip(),
             self.normalizer,
             self.core.device,
-            self.core.use_fp16 and not self.config.autocast,
+            self.core.input_use_fp16,
         )
         inference_result = self.core.infer_clip(clip_tensor, frame_size)
         self.last_sia_push_index = self.buffer.total_pushed

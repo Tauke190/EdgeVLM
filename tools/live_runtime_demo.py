@@ -35,6 +35,9 @@ def parse_args():
     parser.add_argument("--drop-frames", action="store_true", help="Drop replay frames when processing falls behind live pacing.")
     parser.add_argument("--target-fps", type=float, help="Optional override for live replay pacing FPS.")
     parser.add_argument("--weights", help="Optional override for the model weights path.")
+    parser.add_argument("--precision", choices=["fp32", "fp16"], help="Optional precision override.")
+    parser.add_argument("--backend-name", choices=["pytorch", "tensorrt"], help="Optional runtime backend override.")
+    parser.add_argument("--trt-engine-path", help="Optional TensorRT engine override when using the tensorrt backend.")
     parser.add_argument("--output-root", help="Optional override for the output root.")
     parser.add_argument("--output-dir", help="Optional explicit run directory for this invocation.")
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from the source.")
@@ -57,6 +60,13 @@ def build_raw_config(args):
         raw_config["source_fps_override"] = args.target_fps
     if args.weights:
         raw_config["weights_path"] = args.weights
+    if args.precision:
+        raw_config["precision"] = args.precision
+        raw_config["autocast"] = args.precision == "fp16"
+    if args.backend_name:
+        raw_config["backend_name"] = args.backend_name
+    if args.trt_engine_path:
+        raw_config["trt_engine_path"] = args.trt_engine_path
     if args.output_root:
         raw_config["output_root"] = args.output_root
     if args.max_frames is not None:
