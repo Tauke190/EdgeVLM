@@ -100,6 +100,7 @@ weights/
 # Misc
 *.tmp
 *.temp
+tmp/**
 
 # Ignore JSON stats files
 *.json
