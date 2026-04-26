@@ -61,6 +61,7 @@ class RuntimeConfig:
     person_resize_width: int = 320
     person_min_box_area: int = 4096
     sia_target_fps: float = 9.0
+    action_persist_ms: float = 15.0
     sia_min_new_frames: int = 9
     sia_retrigger_on_motion_edge: bool = True
     sia_retrigger_on_person_edge: bool = True
@@ -138,6 +139,7 @@ class RuntimeConfig:
             person_resize_width=int(payload.get("person_resize_width", 320)),
             person_min_box_area=int(payload.get("person_min_box_area", 4096)),
             sia_target_fps=float(payload.get("sia_target_fps", 9.0)),
+            action_persist_ms=float(payload.get("action_persist_ms", 15.0)),
             sia_min_new_frames=int(payload.get("sia_min_new_frames", 9)),
             sia_retrigger_on_motion_edge=bool(payload.get("sia_retrigger_on_motion_edge", True)),
             sia_retrigger_on_person_edge=bool(payload.get("sia_retrigger_on_person_edge", True)),

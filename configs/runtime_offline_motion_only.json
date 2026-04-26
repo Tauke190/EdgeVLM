@@ -26,7 +26,7 @@
   "font_scale": 0.3,
   "line_thickness": 1,
   "render_enabled": true,
-  "motion_threshold_area": 1000,
+  "motion_threshold_area": 300,
   "motion_frames": 3,
   "motion_cooldown_frames": 60,
   "motion_blur_kernel": 5,

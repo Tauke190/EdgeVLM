@@ -355,6 +355,8 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
 
             loop_start = time.perf_counter()
             result = pipeline.process_frame(frame, (frame_height, frame_width))
+            if not result.get("tier_status", {}).get("action_display_active", False):
+                last_completed_predictions = None
             if result["active"]:
                 last_completed_predictions = freeze_predictions(result)
             output_frame = build_output_frame(
