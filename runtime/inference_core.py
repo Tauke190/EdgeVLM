@@ -23,8 +23,15 @@ def decode_text_labels(label_ids_per_box, score_values_per_box, captions, top_k_
         if top_k_labels is not None:
             label_ids = label_ids[:top_k_labels]
             score_values = score_values[:top_k_labels]
-        decoded_labels.append([captions[index] for index in label_ids])
-        decoded_scores.append([float(score) for score in score_values])
+        if torch.is_tensor(label_ids):
+            label_indices = label_ids.tolist()
+        else:
+            label_indices = list(label_ids)
+        decoded_labels.append([captions[index] for index in label_indices])
+        if torch.is_tensor(score_values):
+            decoded_scores.append(score_values.tolist())
+        else:
+            decoded_scores.append([float(score) for score in score_values])
     return decoded_labels, decoded_scores
 
 
@@ -64,7 +71,7 @@ class SIARuntimeCore:
 
             self.vision_backend = TensorRTVisionBackend(config.trt_engine_path, self.device)
 
-        self.captions = load_actions(config.actions_json)
+        self.captions = tuple(load_actions(config.actions_json))
         text_context = (
             torch.autocast(device_type="cuda", dtype=torch.float16)
             if self.precision_uses_cuda_fp16 and config.autocast

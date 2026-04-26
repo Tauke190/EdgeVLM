@@ -112,6 +112,9 @@ def build_status_lines(result):
 
 
 def build_output_frame(frame, result, overlay_color, config):
+    if not config.render_enabled and not config.show_preview:
+        return None
+
     output_frame = frame.copy()
     if result["active"]:
         output_frame = draw_predictions(
@@ -123,7 +126,9 @@ def build_output_frame(frame, result, overlay_color, config):
             config.font_scale,
             config.line_thickness,
         )
-    return draw_status_banner(output_frame, build_status_lines(result), overlay_color)
+    if config.show_preview:
+        output_frame = draw_status_banner(output_frame, build_status_lines(result), overlay_color)
+    return output_frame
 
 
 def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", run_dir=None):
@@ -274,7 +279,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
                     shared_state["first_frame_logged"] = True
             stop_after_enqueue = bool(config.max_frames and capture_count >= config.max_frames)
 
-            enqueue_frame(frame.copy(), capture_count, capture_time)
+            enqueue_frame(frame, capture_count, capture_time)
             if stop_after_enqueue:
                 stop_event.set()
                 break
@@ -486,7 +491,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
             prev_active = sia_active
 
             render_time = result["timings"]["render_s"]
-            if writer is not None:
+            if writer is not None and output_frame is not None:
                 write_start = time.perf_counter()
                 writer.write(output_frame)
                 render_time += time.perf_counter() - write_start
@@ -500,8 +505,9 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
                         )
                         shared_state["first_recorded_frame_logged"] = True
 
-            with state_lock:
-                shared_state["latest_output_frame"] = output_frame.copy()
+            if config.show_preview and output_frame is not None:
+                with state_lock:
+                    shared_state["latest_output_frame"] = output_frame.copy()
 
             loop_time = time.perf_counter() - loop_start
             collector.record_frame(
@@ -520,7 +526,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
                 detections=result["detections"],
             )
 
-            if config.show_preview:
+            if config.show_preview and output_frame is not None:
                 cv2.imshow("SiA Live Runtime", output_frame)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break

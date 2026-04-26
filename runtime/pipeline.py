@@ -47,6 +47,9 @@ class AlwaysOnSIAPipeline:
         self.prev_person_active = False
         self.prev_sia_active = False
 
+    def _render_in_pipeline_enabled(self):
+        return self.config.render_enabled and self.config.mode != "live"
+
     def _timing_stub(self, preprocess_time):
         return {
             "preprocess_s": preprocess_time,
@@ -160,7 +163,7 @@ class AlwaysOnSIAPipeline:
                 "output_ready": False,
                 "scheduler_state": scheduler_state,
                 "sia_trigger_reason": None,
-                "rendered_frame": frame.copy(),
+                "rendered_frame": frame.copy() if self._render_in_pipeline_enabled() else None,
                 "detections": 0,
                 "gate_state": gate_state,
                 "timings": self._timing_stub(preprocess_time),
@@ -178,7 +181,7 @@ class AlwaysOnSIAPipeline:
                 "output_ready": True,
                 "scheduler_state": scheduler_state,
                 "sia_trigger_reason": None,
-                "rendered_frame": self.buffer.render_frame(),
+                "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
                 "detections": 0,
                 "gate_state": gate_state,
                 "timings": self._timing_stub(preprocess_time),
@@ -195,7 +198,7 @@ class AlwaysOnSIAPipeline:
                 "output_ready": True,
                 "scheduler_state": scheduler_state,
                 "sia_trigger_reason": None,
-                "rendered_frame": self.buffer.render_frame(),
+                "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
                 "detections": 0,
                 "gate_state": gate_state,
                 "timings": self._timing_stub(preprocess_time),
@@ -213,7 +216,7 @@ class AlwaysOnSIAPipeline:
                     "output_ready": True,
                     "scheduler_state": scheduler_state,
                     "sia_trigger_reason": None,
-                    "rendered_frame": self.buffer.render_frame(),
+                    "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
                     "detections": 0,
                     "gate_state": gate_state,
                     "timings": self._timing_stub(preprocess_time),
@@ -231,7 +234,7 @@ class AlwaysOnSIAPipeline:
                     "output_ready": True,
                     "scheduler_state": scheduler_state,
                     "sia_trigger_reason": None,
-                    "rendered_frame": self.buffer.render_frame(),
+                    "rendered_frame": self.buffer.render_frame() if self._render_in_pipeline_enabled() else None,
                     "detections": 0,
                     "gate_state": gate_state,
                     "timings": self._timing_stub(preprocess_time),
@@ -247,21 +250,23 @@ class AlwaysOnSIAPipeline:
         )
         inference_result = self.core.infer_clip(clip_tensor, frame_size)
         self.last_sia_push_index = self.buffer.total_pushed
-        render_base = self.buffer.render_frame()
-
-        maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
-        render_start = time.perf_counter()
-        rendered_frame = draw_predictions(
-            render_base,
-            inference_result["boxes"],
-            inference_result["labels"],
-            inference_result["scores"],
-            self.color,
-            self.config.font_scale,
-            self.config.line_thickness,
-        )
-        maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
-        render_time = time.perf_counter() - render_start
+        rendered_frame = None
+        render_time = 0.0
+        if self._render_in_pipeline_enabled():
+            render_base = self.buffer.render_frame()
+            maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
+            render_start = time.perf_counter()
+            rendered_frame = draw_predictions(
+                render_base,
+                inference_result["boxes"],
+                inference_result["labels"],
+                inference_result["scores"],
+                self.color,
+                self.config.font_scale,
+                self.config.line_thickness,
+            )
+            maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
+            render_time = time.perf_counter() - render_start
         return self._finalize_result({
             "active": True,
             "output_ready": True,
