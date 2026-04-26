@@ -20,7 +20,7 @@ from runtime import (
     STAGE_TIMING_FIELDNAMES,
     open_capture,
 )
-from runtime.visualize import draw_predictions, resolve_color
+from runtime.visualize import draw_active_tier_overlay, draw_predictions, resolve_color
 from tools.baseline_utils import ensure_dir, infer_git_commit, load_json, make_run_dir, to_builtin, write_csv, write_json, write_run_summary
 from tools.offline_runtime_demo import EVENT_LOG_FIELDNAMES
 from tools.system_monitor import SystemMonitor
@@ -43,6 +43,7 @@ def parse_args():
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from the source.")
     parser.add_argument("--max-seconds", type=float, help="Optional cap on run duration.")
     parser.add_argument("--no-render", action="store_true", help="Disable output video writing and preview.")
+    parser.add_argument("--show-active-tiers", action="store_true", help="Overlay tier activity indicators on rendered output.")
     return parser.parse_args()
 
 
@@ -76,6 +77,8 @@ def build_raw_config(args):
     if args.no_render:
         raw_config["render_enabled"] = False
         raw_config["show_preview"] = False
+    if args.show_active_tiers:
+        raw_config["show_active_tiers"] = True
     return raw_config
 
 
@@ -147,6 +150,8 @@ def build_output_frame(frame, result, overlay_color, config, persisted_predictio
             config.font_scale,
             config.line_thickness,
         )
+    if config.show_active_tiers:
+        output_frame = draw_active_tier_overlay(output_frame, result.get("tier_status", {}))
     if config.show_preview:
         output_frame = draw_status_banner(output_frame, build_status_lines(result), overlay_color)
     return output_frame
@@ -594,6 +599,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
         "autocast": config.autocast,
         "sia_target_fps": config.sia_target_fps,
         "render_enabled": config.render_enabled,
+        "show_active_tiers": config.show_active_tiers,
         "show_preview": config.show_preview,
         "frames_read": frames_read,
         "frames_dropped": frames_dropped,
@@ -602,11 +608,16 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
         "output_ready_frames": output_ready_frames,
         "clips_processed": clips_processed,
         "motion_active_frames": motion_active_frames,
+        "frames_with_motion": motion_active_frames,
         "person_active_frames": person_active_frames,
+        "frames_with_person": person_active_frames,
         "person_detector_frames": person_detector_frames,
+        "frames_with_person_detector": person_detector_frames,
         "motion_event_count": motion_event_count,
         "person_event_count": person_event_count,
         "sia_activation_count": sia_activation_count,
+        "action_inferences": sia_activation_count,
+        "frames_with_sia_active": active_frames,
         "sia_stride_wait_frames": sia_stride_wait_frames,
         "sia_trigger_reason_counts": dict(sorted(sia_trigger_reason_counts.items())),
         "motion_to_sia_latency_frames": activation_latency_frames,
@@ -614,6 +625,10 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
         "elapsed_s": round(elapsed_s, 3),
         "effective_input_fps": round(frames_read / elapsed_s, 3) if elapsed_s > 0 else None,
         "effective_active_fps": round(clips_processed / elapsed_s, 3) if elapsed_s > 0 else None,
+        "motion_frame_fraction": round(motion_active_frames / frames_read, 4) if frames_read > 0 else None,
+        "person_frame_fraction": round(person_active_frames / frames_read, 4) if frames_read > 0 else None,
+        "sia_active_frame_fraction": round(active_frames / frames_read, 4) if frames_read > 0 else None,
+        "person_detector_frame_fraction": round(person_detector_frames / frames_read, 4) if frames_read > 0 else None,
         "output_fps": round(writer_fps, 3) if writer is not None else None,
         "output_duration_s": round(frames_written / writer_fps, 3) if writer is not None and writer_fps > 0 else None,
         "monitor_source": system_monitor.source,
@@ -633,6 +648,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
             "autocast": config.autocast,
             "sia_target_fps": config.sia_target_fps,
             "render_enabled": config.render_enabled,
+            "show_active_tiers": config.show_active_tiers,
             "show_preview": config.show_preview,
             "simulate_live": config.simulate_live,
             "drop_frames": config.drop_frames,

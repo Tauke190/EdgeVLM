@@ -6,7 +6,7 @@ from runtime.metrics import maybe_cuda_synchronize
 from runtime.motion import MotionGate
 from runtime.person import PersonGate
 from runtime.preprocess import build_clip_tensor, build_normalizer, resize_frame
-from runtime.visualize import draw_predictions, resolve_color
+from runtime.visualize import draw_active_tier_overlay, draw_predictions, resolve_color
 
 
 class AlwaysOnSIAPipeline:
@@ -48,6 +48,7 @@ class AlwaysOnSIAPipeline:
         self.prev_person_active = False
         self.prev_sia_active = False
         self.last_completed_predictions = None
+        self.sia_inference_count = 0
 
     def _render_in_pipeline_enabled(self):
         return self.config.render_enabled and self.config.mode != "live"
@@ -81,7 +82,7 @@ class AlwaysOnSIAPipeline:
             "scores": scores,
         }
 
-    def _render_with_persisted_predictions(self, frame):
+    def _render_with_persisted_predictions(self, frame, tier_status=None):
         if not self._render_in_pipeline_enabled():
             return None, 0.0
         maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
@@ -97,9 +98,29 @@ class AlwaysOnSIAPipeline:
                 self.config.font_scale,
                 self.config.line_thickness,
             )
+        if self.config.show_active_tiers:
+            rendered_frame = draw_active_tier_overlay(rendered_frame, tier_status or self._tier_status(active=False))
         maybe_cuda_synchronize(self.core.device, self.config.sync_cuda_timing)
         render_time = time.perf_counter() - render_start
         return rendered_frame, render_time
+
+    def _person_count(self, gate_state):
+        person_boxes = gate_state.get("person_boxes") or []
+        return len(person_boxes)
+
+    def _tier_status(self, gate_state=None, active=False):
+        gate_state = gate_state or {}
+        action_display_active = bool(active or self.last_completed_predictions)
+        return {
+            "motion_active": bool(gate_state.get("motion_active")),
+            "person_active": bool(gate_state.get("person_active")),
+            "person_count": self._person_count(gate_state),
+            "sia_active": bool(active),
+            "action_display_active": action_display_active,
+            "displaying_persisted_action": bool(self.last_completed_predictions) and not bool(active),
+            "scheduler_state": None,
+            "action_inference_count": self.sia_inference_count,
+        }
 
     def _scheduler_state(self, buffer_ready, gate_state, active, stride_wait=False, cooldown=False, rate_wait=False):
         if active:
@@ -168,6 +189,9 @@ class AlwaysOnSIAPipeline:
         return (now_s - self.last_sia_wall_time) < min_interval_s
 
     def _finalize_result(self, result, gate_state, active):
+        tier_status = self._tier_status(gate_state=gate_state, active=active)
+        tier_status["scheduler_state"] = result.get("scheduler_state")
+        result["tier_status"] = tier_status
         self.prev_motion_active = bool(gate_state.get("motion_active"))
         self.prev_person_active = bool(gate_state.get("person_active"))
         self.prev_sia_active = bool(active)
@@ -207,7 +231,10 @@ class AlwaysOnSIAPipeline:
 
         if not buffer_ready:
             scheduler_state = self._scheduler_state(buffer_ready, gate_state, active=False)
-            rendered_frame, render_time = self._render_with_persisted_predictions(frame)
+            rendered_frame, render_time = self._render_with_persisted_predictions(
+                frame,
+                tier_status=self._tier_status(gate_state=gate_state, active=False),
+            )
             return self._finalize_result({
                 "active": False,
                 "output_ready": False,
@@ -229,7 +256,10 @@ class AlwaysOnSIAPipeline:
                 active=False,
                 cooldown=cooldown_active,
             )
-            rendered_frame, render_time = self._render_with_persisted_predictions(self.buffer.render_frame())
+            rendered_frame, render_time = self._render_with_persisted_predictions(
+                self.buffer.render_frame(),
+                tier_status=self._tier_status(gate_state=gate_state, active=False),
+            )
             return self._finalize_result({
                 "active": False,
                 "output_ready": True,
@@ -250,7 +280,10 @@ class AlwaysOnSIAPipeline:
                 active=False,
                 cooldown=cooldown_active,
             )
-            rendered_frame, render_time = self._render_with_persisted_predictions(self.buffer.render_frame())
+            rendered_frame, render_time = self._render_with_persisted_predictions(
+                self.buffer.render_frame(),
+                tier_status=self._tier_status(gate_state=gate_state, active=False),
+            )
             return self._finalize_result({
                 "active": False,
                 "output_ready": True,
@@ -272,7 +305,10 @@ class AlwaysOnSIAPipeline:
                     active=False,
                     cooldown=cooldown_active,
                 )
-                rendered_frame, render_time = self._render_with_persisted_predictions(self.buffer.render_frame())
+                rendered_frame, render_time = self._render_with_persisted_predictions(
+                    self.buffer.render_frame(),
+                    tier_status=self._tier_status(gate_state=gate_state, active=False),
+                )
                 return self._finalize_result({
                     "active": False,
                     "output_ready": True,
@@ -294,7 +330,10 @@ class AlwaysOnSIAPipeline:
                     active=False,
                     stride_wait=True,
                 )
-                rendered_frame, render_time = self._render_with_persisted_predictions(self.buffer.render_frame())
+                rendered_frame, render_time = self._render_with_persisted_predictions(
+                    self.buffer.render_frame(),
+                    tier_status=self._tier_status(gate_state=gate_state, active=False),
+                )
                 return self._finalize_result({
                     "active": False,
                     "output_ready": True,
@@ -318,7 +357,10 @@ class AlwaysOnSIAPipeline:
                 active=False,
                 rate_wait=True,
             )
-            rendered_frame, render_time = self._render_with_persisted_predictions(self.buffer.render_frame())
+            rendered_frame, render_time = self._render_with_persisted_predictions(
+                self.buffer.render_frame(),
+                tier_status=self._tier_status(gate_state=gate_state, active=False),
+            )
             return self._finalize_result({
                 "active": False,
                 "output_ready": True,
@@ -341,13 +383,17 @@ class AlwaysOnSIAPipeline:
         )
         inference_result = self.core.infer_clip(clip_tensor, frame_size)
         self.last_completed_predictions = self._freeze_predictions(inference_result)
+        self.sia_inference_count += 1
         self.last_sia_push_index = self.buffer.total_pushed
         self.last_sia_wall_time = frame_start_s
         rendered_frame = None
         render_time = 0.0
         if self._render_in_pipeline_enabled():
             render_base = self.buffer.render_frame()
-            rendered_frame, render_time = self._render_with_persisted_predictions(render_base)
+            rendered_frame, render_time = self._render_with_persisted_predictions(
+                render_base,
+                tier_status=self._tier_status(gate_state=gate_state, active=True),
+            )
         return self._finalize_result({
             "active": True,
             "output_ready": True,
