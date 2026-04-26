@@ -38,6 +38,13 @@ def parse_args():
     parser.add_argument("--precision", choices=["fp32", "fp16"], help="Optional precision override.")
     parser.add_argument("--backend-name", choices=["pytorch", "tensorrt"], help="Optional runtime backend override.")
     parser.add_argument("--trt-engine-path", help="Optional TensorRT engine override when using the tensorrt backend.")
+    parser.add_argument("--sia-target-fps", type=float, help="Optional override for the SiA activation FPS cap. Use 0 to disable.")
+    parser.add_argument("--adaptive-sia-target-fps", action="store_true", help="Enable adaptive SiA FPS capping. Starts uncapped during warmup.")
+    parser.add_argument("--adaptive-sia-warmup-frames", type=int, help="Number of SiA-active frames to observe before enabling the adaptive cap.")
+    parser.add_argument("--adaptive-sia-utilization", type=float, help="Target fraction of measured active throughput to use as the adaptive cap.")
+    parser.add_argument("--adaptive-sia-smoothing", type=float, help="EMA smoothing factor for adaptive active-loop timing.")
+    parser.add_argument("--adaptive-sia-min-fps", type=float, help="Minimum adaptive SiA FPS cap after warmup.")
+    parser.add_argument("--adaptive-sia-max-fps", type=float, help="Maximum adaptive SiA FPS cap after warmup.")
     parser.add_argument("--output-root", help="Optional override for the output root.")
     parser.add_argument("--output-dir", help="Optional explicit run directory for this invocation.")
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from the source.")
@@ -68,6 +75,20 @@ def build_raw_config(args):
         raw_config["backend_name"] = args.backend_name
     if args.trt_engine_path:
         raw_config["trt_engine_path"] = args.trt_engine_path
+    if args.sia_target_fps is not None:
+        raw_config["sia_target_fps"] = args.sia_target_fps
+    if args.adaptive_sia_target_fps:
+        raw_config["adaptive_sia_target_fps"] = True
+    if args.adaptive_sia_warmup_frames is not None:
+        raw_config["adaptive_sia_warmup_frames"] = args.adaptive_sia_warmup_frames
+    if args.adaptive_sia_utilization is not None:
+        raw_config["adaptive_sia_utilization"] = args.adaptive_sia_utilization
+    if args.adaptive_sia_smoothing is not None:
+        raw_config["adaptive_sia_smoothing"] = args.adaptive_sia_smoothing
+    if args.adaptive_sia_min_fps is not None:
+        raw_config["adaptive_sia_min_fps"] = args.adaptive_sia_min_fps
+    if args.adaptive_sia_max_fps is not None:
+        raw_config["adaptive_sia_max_fps"] = args.adaptive_sia_max_fps
     if args.output_root:
         raw_config["output_root"] = args.output_root
     if args.max_frames is not None:
@@ -600,6 +621,15 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
         "precision": config.precision,
         "autocast": config.autocast,
         "sia_target_fps": config.sia_target_fps,
+        "adaptive_sia_target_fps": config.adaptive_sia_target_fps,
+        "adaptive_sia_warmup_frames": config.adaptive_sia_warmup_frames,
+        "adaptive_sia_utilization": config.adaptive_sia_utilization,
+        "adaptive_sia_smoothing": config.adaptive_sia_smoothing,
+        "adaptive_sia_min_fps": config.adaptive_sia_min_fps,
+        "adaptive_sia_max_fps": config.adaptive_sia_max_fps,
+        "sia_target_fps_effective_final": pipeline.current_sia_target_fps,
+        "adaptive_sia_target_fps_updates": pipeline.adaptive_cap_updates,
+        "adaptive_sia_active_loop_ema_ms_final": pipeline._adaptive_cap_ema_ms(),
         "render_enabled": config.render_enabled,
         "show_active_tiers": config.show_active_tiers,
         "show_preview": config.show_preview,
@@ -649,6 +679,12 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
             "precision": config.precision,
             "autocast": config.autocast,
             "sia_target_fps": config.sia_target_fps,
+            "adaptive_sia_target_fps": config.adaptive_sia_target_fps,
+            "adaptive_sia_warmup_frames": config.adaptive_sia_warmup_frames,
+            "adaptive_sia_utilization": config.adaptive_sia_utilization,
+            "adaptive_sia_smoothing": config.adaptive_sia_smoothing,
+            "adaptive_sia_min_fps": config.adaptive_sia_min_fps,
+            "adaptive_sia_max_fps": config.adaptive_sia_max_fps,
             "render_enabled": config.render_enabled,
             "show_active_tiers": config.show_active_tiers,
             "show_preview": config.show_preview,
@@ -673,6 +709,11 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
             f"Precision: {config.precision}",
             f"Autocast enabled: {config.autocast}",
             f"SiA target FPS cap: {config.sia_target_fps}",
+            f"Adaptive SiA cap enabled: {config.adaptive_sia_target_fps}",
+            f"Adaptive SiA warmup frames: {config.adaptive_sia_warmup_frames}",
+            f"Adaptive SiA utilization: {config.adaptive_sia_utilization}",
+            f"Adaptive SiA effective final FPS cap: {round(pipeline.current_sia_target_fps, 3)}",
+            f"Adaptive SiA cap updates: {pipeline.adaptive_cap_updates}",
             f"Frames read: {frames_read}",
             f"Frames dropped: {frames_dropped}",
             f"Active frames: {active_frames}",

@@ -61,6 +61,12 @@ class RuntimeConfig:
     person_resize_width: int = 320
     person_min_box_area: int = 4096
     sia_target_fps: float = 9.0
+    adaptive_sia_target_fps: bool = False
+    adaptive_sia_warmup_frames: int = 30
+    adaptive_sia_smoothing: float = 0.2
+    adaptive_sia_utilization: float = 0.85
+    adaptive_sia_min_fps: float = 1.0
+    adaptive_sia_max_fps: float | None = None
     action_persist_ms: float = 15.0
     sia_min_new_frames: int = 9
     sia_retrigger_on_motion_edge: bool = True
@@ -139,6 +145,16 @@ class RuntimeConfig:
             person_resize_width=int(payload.get("person_resize_width", 320)),
             person_min_box_area=int(payload.get("person_min_box_area", 4096)),
             sia_target_fps=float(payload.get("sia_target_fps", 9.0)),
+            adaptive_sia_target_fps=bool(payload.get("adaptive_sia_target_fps", False)),
+            adaptive_sia_warmup_frames=int(payload.get("adaptive_sia_warmup_frames", 30)),
+            adaptive_sia_smoothing=float(payload.get("adaptive_sia_smoothing", 0.2)),
+            adaptive_sia_utilization=float(payload.get("adaptive_sia_utilization", 0.85)),
+            adaptive_sia_min_fps=float(payload.get("adaptive_sia_min_fps", 1.0)),
+            adaptive_sia_max_fps=(
+                None
+                if payload.get("adaptive_sia_max_fps") is None
+                else float(payload.get("adaptive_sia_max_fps"))
+            ),
             action_persist_ms=float(payload.get("action_persist_ms", 15.0)),
             sia_min_new_frames=int(payload.get("sia_min_new_frames", 9)),
             sia_retrigger_on_motion_edge=bool(payload.get("sia_retrigger_on_motion_edge", True)),
