@@ -262,6 +262,14 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
     last_completed_predictions = None
 
     def enqueue_frame(frame, capture_index, capture_s):
+        if config.video_path and config.simulate_live and not config.drop_frames:
+            while not stop_event.is_set():
+                try:
+                    frame_queue.put((frame, capture_index, capture_s), timeout=0.1)
+                    return
+                except queue.Full:
+                    continue
+            return
         try:
             frame_queue.put_nowait((frame, capture_index, capture_s))
             return
