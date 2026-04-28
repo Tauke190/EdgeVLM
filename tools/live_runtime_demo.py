@@ -243,7 +243,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
     output_ready_frames = 0
     motion_active_frames = 0
     person_active_frames = 0
-    person_detector_frames = 0
+    person_detector_runs = 0
     clips_processed = 0
     scheduler_state_counts = Counter()
     event_rows = []
@@ -404,7 +404,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
             if result["gate_state"].get("person_active"):
                 person_active_frames += 1
             if result["gate_state"].get("person_detector_ran"):
-                person_detector_frames += 1
+                person_detector_runs += 1
 
             scheduler_state = result.get("scheduler_state", "unknown")
             scheduler_state_counts[scheduler_state] += 1
@@ -649,12 +649,14 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
         "frames_with_motion": motion_active_frames,
         "person_active_frames": person_active_frames,
         "frames_with_person": person_active_frames,
-        "person_detector_frames": person_detector_frames,
-        "frames_with_person_detector": person_detector_frames,
+        "person_detector_frames": person_detector_runs,
+        "person_detector_runs": person_detector_runs,
+        "frames_with_person_detector": person_detector_runs,
         "motion_event_count": motion_event_count,
         "person_event_count": person_event_count,
         "sia_activation_count": sia_activation_count,
-        "action_inferences": sia_activation_count,
+        "sia_inference_iterations": pipeline.sia_inference_count,
+        "action_inferences": pipeline.sia_inference_count,
         "frames_with_sia_active": active_frames,
         "sia_stride_wait_frames": sia_stride_wait_frames,
         "sia_trigger_reason_counts": dict(sorted(sia_trigger_reason_counts.items())),
@@ -666,7 +668,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
         "motion_frame_fraction": round(motion_active_frames / frames_read, 4) if frames_read > 0 else None,
         "person_frame_fraction": round(person_active_frames / frames_read, 4) if frames_read > 0 else None,
         "sia_active_frame_fraction": round(active_frames / frames_read, 4) if frames_read > 0 else None,
-        "person_detector_frame_fraction": round(person_detector_frames / frames_read, 4) if frames_read > 0 else None,
+        "person_detector_frame_fraction": round(person_detector_runs / frames_read, 4) if frames_read > 0 else None,
         "output_fps": round(writer_fps, 3) if writer is not None else None,
         "output_duration_s": round(frames_written / writer_fps, 3) if writer is not None and writer_fps > 0 else None,
         "monitor_source": system_monitor.source,
@@ -728,7 +730,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
             f"Frames written: {frames_written}",
             f"Motion-active frames: {motion_active_frames}",
             f"Person-active frames: {person_active_frames}",
-            f"Person-detector frames: {person_detector_frames}",
+            f"Person-detector runs: {person_detector_runs}",
             f"Motion events: {motion_event_count}",
             f"Person events: {person_event_count}",
             f"SiA activations: {sia_activation_count}",

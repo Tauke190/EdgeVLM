@@ -151,7 +151,7 @@ def run_offline_runtime(
     output_ready_frames = 0
     motion_active_frames = 0
     person_active_frames = 0
-    person_detector_frames = 0
+    person_detector_runs = 0
     scheduler_state_counts = Counter()
     event_rows = []
     prev_scheduler_state = None
@@ -200,7 +200,7 @@ def run_offline_runtime(
             if result["gate_state"].get("person_active"):
                 person_active_frames += 1
             if result["gate_state"].get("person_detector_ran"):
-                person_detector_frames += 1
+                person_detector_runs += 1
             scheduler_state = result.get("scheduler_state", "unknown")
             scheduler_state_counts[scheduler_state] += 1
             if scheduler_state == "sia_stride_wait":
@@ -426,12 +426,14 @@ def run_offline_runtime(
         "frames_with_motion": motion_active_frames,
         "person_active_frames": person_active_frames,
         "frames_with_person": person_active_frames,
-        "person_detector_frames": person_detector_frames,
-        "frames_with_person_detector": person_detector_frames,
+        "person_detector_frames": person_detector_runs,
+        "person_detector_runs": person_detector_runs,
+        "frames_with_person_detector": person_detector_runs,
         "motion_event_count": motion_event_count,
         "person_event_count": person_event_count,
         "sia_activation_count": sia_activation_count,
-        "action_inferences": sia_activation_count,
+        "sia_inference_iterations": pipeline.sia_inference_count,
+        "action_inferences": pipeline.sia_inference_count,
         "frames_with_sia_active": active_frames,
         "sia_target_fps": config.sia_target_fps,
         "adaptive_sia_target_fps": config.adaptive_sia_target_fps,
@@ -456,7 +458,7 @@ def run_offline_runtime(
         "motion_frame_fraction": round(motion_active_frames / frame_count, 4) if frame_count > 0 else None,
         "person_frame_fraction": round(person_active_frames / frame_count, 4) if frame_count > 0 else None,
         "sia_active_frame_fraction": round(active_frames / frame_count, 4) if frame_count > 0 else None,
-        "person_detector_frame_fraction": round(person_detector_frames / frame_count, 4) if frame_count > 0 else None,
+        "person_detector_frame_fraction": round(person_detector_runs / frame_count, 4) if frame_count > 0 else None,
         "source_fps": round(source_fps, 3) if source_fps and source_fps > 0 else None,
         "render_enabled": config.render_enabled,
         "show_active_tiers": config.show_active_tiers,
@@ -519,7 +521,7 @@ def run_offline_runtime(
             f"Clips processed: {clips_processed}",
             f"Motion-active frames: {motion_active_frames}",
             f"Person-active frames: {person_active_frames}",
-            f"Person-detector frames: {person_detector_frames}",
+            f"Person-detector runs: {person_detector_runs}",
             f"Motion events: {motion_event_count}",
             f"Person events: {person_event_count}",
             f"SiA activations: {sia_activation_count}",
