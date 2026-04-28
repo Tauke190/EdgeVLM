@@ -53,6 +53,7 @@ def parse_args():
     parser.add_argument("--max-seconds", type=float, help="Optional cap on run duration.")
     parser.add_argument("--no-render", action="store_true", help="Disable output video writing and preview.")
     parser.add_argument("--show-active-tiers", action="store_true", help="Overlay tier activity indicators on rendered output.")
+    parser.add_argument("--show-preview", action="store_true", help="Show a live preview window during rendering.")
     return parser.parse_args()
 
 
@@ -106,6 +107,9 @@ def build_raw_config(args):
         raw_config["show_preview"] = False
     if args.show_active_tiers:
         raw_config["show_active_tiers"] = True
+    if args.show_preview:
+        raw_config["show_preview"] = True
+        raw_config["render_enabled"] = True
     return raw_config
 
 
@@ -179,8 +183,6 @@ def build_output_frame(frame, result, overlay_color, config, persisted_predictio
         )
     if config.show_active_tiers:
         output_frame = draw_active_tier_overlay(output_frame, result.get("tier_status", {}))
-    if config.show_preview:
-        output_frame = draw_status_banner(output_frame, build_status_lines(result), overlay_color)
     return output_frame
 
 
