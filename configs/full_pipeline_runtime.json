@@ -33,7 +33,7 @@
   "motion_learning_rate": 0.001,
   "person_detector": "yolov8n",
   "person_weights": "weights/yolov8n.pt",
-  "person_threshold": 0.15,
+  "person_threshold": 0.19,
   "person_precision": "fp32",
   "person_stride": 1,
   "person_cooldown_frames": 8,
