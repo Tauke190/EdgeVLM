@@ -48,6 +48,7 @@ class RuntimeConfig:
     motion_threshold_area: int = 1000
     motion_frames: int = 3
     motion_cooldown_frames: int = 60
+    motion_min_on_time: int = 0
     motion_blur_kernel: int = 5
     motion_learning_rate: float = 0.001
     person_detector: str = "yolov8n"
@@ -56,11 +57,18 @@ class RuntimeConfig:
     person_precision: str = "fp32"
     person_stride: int = 3
     person_cooldown_frames: int = 6
+    person_min_on_time: int = 0
     person_hit_threshold: float = 0.0
     person_scale: float = 1.05
     person_resize_width: int = 320
     person_min_box_area: int = 4096
     sia_target_fps: float = 9.0
+    adaptive_sia_target_fps: bool = False
+    adaptive_sia_warmup_frames: int = 30
+    adaptive_sia_smoothing: float = 0.2
+    adaptive_sia_utilization: float = 0.85
+    adaptive_sia_min_fps: float = 1.0
+    adaptive_sia_max_fps: float | None = None
     action_persist_ms: float = 15.0
     sia_min_new_frames: int = 9
     sia_retrigger_on_motion_edge: bool = True
@@ -126,6 +134,7 @@ class RuntimeConfig:
             motion_threshold_area=int(payload.get("motion_threshold_area", 1000)),
             motion_frames=int(payload.get("motion_frames", 3)),
             motion_cooldown_frames=int(payload.get("motion_cooldown_frames", 60)),
+            motion_min_on_time=int(payload.get("motion_min_on_time", 0)),
             motion_blur_kernel=int(payload.get("motion_blur_kernel", 5)),
             motion_learning_rate=float(payload.get("motion_learning_rate", 0.001)),
             person_detector=payload.get("person_detector", "yolov8n"),
@@ -134,11 +143,22 @@ class RuntimeConfig:
             person_precision=payload.get("person_precision", "fp32"),
             person_stride=int(payload.get("person_stride", 3)),
             person_cooldown_frames=int(payload.get("person_cooldown_frames", 6)),
+            person_min_on_time=int(payload.get("person_min_on_time", 0)),
             person_hit_threshold=float(payload.get("person_hit_threshold", 0.0)),
             person_scale=float(payload.get("person_scale", 1.05)),
             person_resize_width=int(payload.get("person_resize_width", 320)),
             person_min_box_area=int(payload.get("person_min_box_area", 4096)),
             sia_target_fps=float(payload.get("sia_target_fps", 9.0)),
+            adaptive_sia_target_fps=bool(payload.get("adaptive_sia_target_fps", False)),
+            adaptive_sia_warmup_frames=int(payload.get("adaptive_sia_warmup_frames", 30)),
+            adaptive_sia_smoothing=float(payload.get("adaptive_sia_smoothing", 0.2)),
+            adaptive_sia_utilization=float(payload.get("adaptive_sia_utilization", 0.85)),
+            adaptive_sia_min_fps=float(payload.get("adaptive_sia_min_fps", 1.0)),
+            adaptive_sia_max_fps=(
+                None
+                if payload.get("adaptive_sia_max_fps") is None
+                else float(payload.get("adaptive_sia_max_fps"))
+            ),
             action_persist_ms=float(payload.get("action_persist_ms", 15.0)),
             sia_min_new_frames=int(payload.get("sia_min_new_frames", 9)),
             sia_retrigger_on_motion_edge=bool(payload.get("sia_retrigger_on_motion_edge", True)),

@@ -52,6 +52,15 @@ def parse_args():
     parser.add_argument("--precision", choices=["fp32", "fp16"], help="Optional precision override.")
     parser.add_argument("--backend-name", choices=["pytorch", "tensorrt"], help="Optional runtime backend override.")
     parser.add_argument("--trt-engine-path", help="Optional TensorRT engine override when using the tensorrt backend.")
+    parser.add_argument("--sia-target-fps", type=float, help="Optional override for the SiA activation FPS cap. Use 0 to disable.")
+    parser.add_argument("--adaptive-sia-target-fps", action="store_true", help="Enable adaptive SiA FPS capping. Starts uncapped during warmup.")
+    parser.add_argument("--adaptive-sia-warmup-frames", type=int, help="Number of SiA-active frames to observe before enabling the adaptive cap.")
+    parser.add_argument("--adaptive-sia-utilization", type=float, help="Target fraction of measured active throughput to use as the adaptive cap.")
+    parser.add_argument("--adaptive-sia-smoothing", type=float, help="EMA smoothing factor for adaptive active-loop timing.")
+    parser.add_argument("--adaptive-sia-min-fps", type=float, help="Minimum adaptive SiA FPS cap after warmup.")
+    parser.add_argument("--adaptive-sia-max-fps", type=float, help="Maximum adaptive SiA FPS cap after warmup.")
+    parser.add_argument("--motion-min-on-time", type=int, help="Minimum number of frames to keep the motion gate open before allowing it to close.")
+    parser.add_argument("--person-min-on-time", type=int, help="Minimum number of frames to keep the person gate open before allowing it to close.")
     parser.add_argument("--output-root", help="Optional override for the output root.")
     parser.add_argument("--output-dir", help="Optional explicit run directory for this invocation.")
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from the source video.")
@@ -73,6 +82,24 @@ def build_raw_config(args):
         raw_config["backend_name"] = args.backend_name
     if args.trt_engine_path:
         raw_config["trt_engine_path"] = args.trt_engine_path
+    if args.sia_target_fps is not None:
+        raw_config["sia_target_fps"] = args.sia_target_fps
+    if args.adaptive_sia_target_fps:
+        raw_config["adaptive_sia_target_fps"] = True
+    if args.adaptive_sia_warmup_frames is not None:
+        raw_config["adaptive_sia_warmup_frames"] = args.adaptive_sia_warmup_frames
+    if args.adaptive_sia_utilization is not None:
+        raw_config["adaptive_sia_utilization"] = args.adaptive_sia_utilization
+    if args.adaptive_sia_smoothing is not None:
+        raw_config["adaptive_sia_smoothing"] = args.adaptive_sia_smoothing
+    if args.adaptive_sia_min_fps is not None:
+        raw_config["adaptive_sia_min_fps"] = args.adaptive_sia_min_fps
+    if args.adaptive_sia_max_fps is not None:
+        raw_config["adaptive_sia_max_fps"] = args.adaptive_sia_max_fps
+    if args.motion_min_on_time is not None:
+        raw_config["motion_min_on_time"] = args.motion_min_on_time
+    if args.person_min_on_time is not None:
+        raw_config["person_min_on_time"] = args.person_min_on_time
     if args.output_root:
         raw_config["output_root"] = args.output_root
     if args.max_frames is not None:
@@ -124,7 +151,7 @@ def run_offline_runtime(
     output_ready_frames = 0
     motion_active_frames = 0
     person_active_frames = 0
-    person_detector_frames = 0
+    person_detector_runs = 0
     scheduler_state_counts = Counter()
     event_rows = []
     prev_scheduler_state = None
@@ -173,7 +200,7 @@ def run_offline_runtime(
             if result["gate_state"].get("person_active"):
                 person_active_frames += 1
             if result["gate_state"].get("person_detector_ran"):
-                person_detector_frames += 1
+                person_detector_runs += 1
             scheduler_state = result.get("scheduler_state", "unknown")
             scheduler_state_counts[scheduler_state] += 1
             if scheduler_state == "sia_stride_wait":
@@ -399,14 +426,25 @@ def run_offline_runtime(
         "frames_with_motion": motion_active_frames,
         "person_active_frames": person_active_frames,
         "frames_with_person": person_active_frames,
-        "person_detector_frames": person_detector_frames,
-        "frames_with_person_detector": person_detector_frames,
+        "person_detector_frames": person_detector_runs,
+        "person_detector_runs": person_detector_runs,
+        "frames_with_person_detector": person_detector_runs,
         "motion_event_count": motion_event_count,
         "person_event_count": person_event_count,
         "sia_activation_count": sia_activation_count,
-        "action_inferences": sia_activation_count,
+        "sia_inference_iterations": pipeline.sia_inference_count,
+        "action_inferences": pipeline.sia_inference_count,
         "frames_with_sia_active": active_frames,
         "sia_target_fps": config.sia_target_fps,
+        "adaptive_sia_target_fps": config.adaptive_sia_target_fps,
+        "adaptive_sia_warmup_frames": config.adaptive_sia_warmup_frames,
+        "adaptive_sia_utilization": config.adaptive_sia_utilization,
+        "adaptive_sia_smoothing": config.adaptive_sia_smoothing,
+        "adaptive_sia_min_fps": config.adaptive_sia_min_fps,
+        "adaptive_sia_max_fps": config.adaptive_sia_max_fps,
+        "sia_target_fps_effective_final": pipeline.current_sia_target_fps,
+        "adaptive_sia_target_fps_updates": pipeline.adaptive_cap_updates,
+        "adaptive_sia_active_loop_ema_ms_final": pipeline._adaptive_cap_ema_ms(),
         "sia_stride_wait_frames": sia_stride_wait_frames,
         "sia_trigger_reason_counts": dict(sorted(sia_trigger_reason_counts.items())),
         "motion_to_sia_latency_frames": activation_latency_frames,
@@ -420,7 +458,7 @@ def run_offline_runtime(
         "motion_frame_fraction": round(motion_active_frames / frame_count, 4) if frame_count > 0 else None,
         "person_frame_fraction": round(person_active_frames / frame_count, 4) if frame_count > 0 else None,
         "sia_active_frame_fraction": round(active_frames / frame_count, 4) if frame_count > 0 else None,
-        "person_detector_frame_fraction": round(person_detector_frames / frame_count, 4) if frame_count > 0 else None,
+        "person_detector_frame_fraction": round(person_detector_runs / frame_count, 4) if frame_count > 0 else None,
         "source_fps": round(source_fps, 3) if source_fps and source_fps > 0 else None,
         "render_enabled": config.render_enabled,
         "show_active_tiers": config.show_active_tiers,
@@ -439,6 +477,12 @@ def run_offline_runtime(
             "autocast": config.autocast,
             "top_k_labels": config.top_k_labels,
             "sia_target_fps": config.sia_target_fps,
+            "adaptive_sia_target_fps": config.adaptive_sia_target_fps,
+            "adaptive_sia_warmup_frames": config.adaptive_sia_warmup_frames,
+            "adaptive_sia_utilization": config.adaptive_sia_utilization,
+            "adaptive_sia_smoothing": config.adaptive_sia_smoothing,
+            "adaptive_sia_min_fps": config.adaptive_sia_min_fps,
+            "adaptive_sia_max_fps": config.adaptive_sia_max_fps,
             "sync_cuda_timing": config.sync_cuda_timing,
             "render_enabled": config.render_enabled,
             "show_active_tiers": config.show_active_tiers,
@@ -463,6 +507,11 @@ def run_offline_runtime(
             f"Actions: {len(pipeline.core.captions)}",
             f"Top-k labels per box: {config.top_k_labels if config.top_k_labels is not None else 'all'}",
             f"SiA target FPS cap: {config.sia_target_fps}",
+            f"Adaptive SiA cap enabled: {config.adaptive_sia_target_fps}",
+            f"Adaptive SiA warmup frames: {config.adaptive_sia_warmup_frames}",
+            f"Adaptive SiA utilization: {config.adaptive_sia_utilization}",
+            f"Adaptive SiA effective final FPS cap: {round(pipeline.current_sia_target_fps, 3)}",
+            f"Adaptive SiA cap updates: {pipeline.adaptive_cap_updates}",
             f"CUDA timing synchronization: {config.sync_cuda_timing}",
             f"Monitor source: {system_monitor.source}",
             f"Frames read: {frame_count}",
@@ -472,7 +521,7 @@ def run_offline_runtime(
             f"Clips processed: {clips_processed}",
             f"Motion-active frames: {motion_active_frames}",
             f"Person-active frames: {person_active_frames}",
-            f"Person-detector frames: {person_detector_frames}",
+            f"Person-detector runs: {person_detector_runs}",
             f"Motion events: {motion_event_count}",
             f"Person events: {person_event_count}",
             f"SiA activations: {sia_activation_count}",

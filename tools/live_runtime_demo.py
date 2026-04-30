@@ -38,12 +38,22 @@ def parse_args():
     parser.add_argument("--precision", choices=["fp32", "fp16"], help="Optional precision override.")
     parser.add_argument("--backend-name", choices=["pytorch", "tensorrt"], help="Optional runtime backend override.")
     parser.add_argument("--trt-engine-path", help="Optional TensorRT engine override when using the tensorrt backend.")
+    parser.add_argument("--sia-target-fps", type=float, help="Optional override for the SiA activation FPS cap. Use 0 to disable.")
+    parser.add_argument("--adaptive-sia-target-fps", action="store_true", help="Enable adaptive SiA FPS capping. Starts uncapped during warmup.")
+    parser.add_argument("--adaptive-sia-warmup-frames", type=int, help="Number of SiA-active frames to observe before enabling the adaptive cap.")
+    parser.add_argument("--adaptive-sia-utilization", type=float, help="Target fraction of measured active throughput to use as the adaptive cap.")
+    parser.add_argument("--adaptive-sia-smoothing", type=float, help="EMA smoothing factor for adaptive active-loop timing.")
+    parser.add_argument("--adaptive-sia-min-fps", type=float, help="Minimum adaptive SiA FPS cap after warmup.")
+    parser.add_argument("--adaptive-sia-max-fps", type=float, help="Maximum adaptive SiA FPS cap after warmup.")
+    parser.add_argument("--motion-min-on-time", type=int, help="Minimum number of frames to keep the motion gate open before allowing it to close.")
+    parser.add_argument("--person-min-on-time", type=int, help="Minimum number of frames to keep the person gate open before allowing it to close.")
     parser.add_argument("--output-root", help="Optional override for the output root.")
     parser.add_argument("--output-dir", help="Optional explicit run directory for this invocation.")
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from the source.")
     parser.add_argument("--max-seconds", type=float, help="Optional cap on run duration.")
     parser.add_argument("--no-render", action="store_true", help="Disable output video writing and preview.")
     parser.add_argument("--show-active-tiers", action="store_true", help="Overlay tier activity indicators on rendered output.")
+    parser.add_argument("--show-preview", action="store_true", help="Show a live preview window during rendering.")
     return parser.parse_args()
 
 
@@ -68,6 +78,24 @@ def build_raw_config(args):
         raw_config["backend_name"] = args.backend_name
     if args.trt_engine_path:
         raw_config["trt_engine_path"] = args.trt_engine_path
+    if args.sia_target_fps is not None:
+        raw_config["sia_target_fps"] = args.sia_target_fps
+    if args.adaptive_sia_target_fps:
+        raw_config["adaptive_sia_target_fps"] = True
+    if args.adaptive_sia_warmup_frames is not None:
+        raw_config["adaptive_sia_warmup_frames"] = args.adaptive_sia_warmup_frames
+    if args.adaptive_sia_utilization is not None:
+        raw_config["adaptive_sia_utilization"] = args.adaptive_sia_utilization
+    if args.adaptive_sia_smoothing is not None:
+        raw_config["adaptive_sia_smoothing"] = args.adaptive_sia_smoothing
+    if args.adaptive_sia_min_fps is not None:
+        raw_config["adaptive_sia_min_fps"] = args.adaptive_sia_min_fps
+    if args.adaptive_sia_max_fps is not None:
+        raw_config["adaptive_sia_max_fps"] = args.adaptive_sia_max_fps
+    if args.motion_min_on_time is not None:
+        raw_config["motion_min_on_time"] = args.motion_min_on_time
+    if args.person_min_on_time is not None:
+        raw_config["person_min_on_time"] = args.person_min_on_time
     if args.output_root:
         raw_config["output_root"] = args.output_root
     if args.max_frames is not None:
@@ -79,6 +107,9 @@ def build_raw_config(args):
         raw_config["show_preview"] = False
     if args.show_active_tiers:
         raw_config["show_active_tiers"] = True
+    if args.show_preview:
+        raw_config["show_preview"] = True
+        raw_config["render_enabled"] = True
     return raw_config
 
 
@@ -152,8 +183,6 @@ def build_output_frame(frame, result, overlay_color, config, persisted_predictio
         )
     if config.show_active_tiers:
         output_frame = draw_active_tier_overlay(output_frame, result.get("tier_status", {}))
-    if config.show_preview:
-        output_frame = draw_status_banner(output_frame, build_status_lines(result), overlay_color)
     return output_frame
 
 
@@ -216,7 +245,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
     output_ready_frames = 0
     motion_active_frames = 0
     person_active_frames = 0
-    person_detector_frames = 0
+    person_detector_runs = 0
     clips_processed = 0
     scheduler_state_counts = Counter()
     event_rows = []
@@ -235,6 +264,14 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
     last_completed_predictions = None
 
     def enqueue_frame(frame, capture_index, capture_s):
+        if config.video_path and config.simulate_live and not config.drop_frames:
+            while not stop_event.is_set():
+                try:
+                    frame_queue.put((frame, capture_index, capture_s), timeout=0.1)
+                    return
+                except queue.Full:
+                    continue
+            return
         try:
             frame_queue.put_nowait((frame, capture_index, capture_s))
             return
@@ -377,7 +414,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
             if result["gate_state"].get("person_active"):
                 person_active_frames += 1
             if result["gate_state"].get("person_detector_ran"):
-                person_detector_frames += 1
+                person_detector_runs += 1
 
             scheduler_state = result.get("scheduler_state", "unknown")
             scheduler_state_counts[scheduler_state] += 1
@@ -600,6 +637,15 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
         "precision": config.precision,
         "autocast": config.autocast,
         "sia_target_fps": config.sia_target_fps,
+        "adaptive_sia_target_fps": config.adaptive_sia_target_fps,
+        "adaptive_sia_warmup_frames": config.adaptive_sia_warmup_frames,
+        "adaptive_sia_utilization": config.adaptive_sia_utilization,
+        "adaptive_sia_smoothing": config.adaptive_sia_smoothing,
+        "adaptive_sia_min_fps": config.adaptive_sia_min_fps,
+        "adaptive_sia_max_fps": config.adaptive_sia_max_fps,
+        "sia_target_fps_effective_final": pipeline.current_sia_target_fps,
+        "adaptive_sia_target_fps_updates": pipeline.adaptive_cap_updates,
+        "adaptive_sia_active_loop_ema_ms_final": pipeline._adaptive_cap_ema_ms(),
         "render_enabled": config.render_enabled,
         "show_active_tiers": config.show_active_tiers,
         "show_preview": config.show_preview,
@@ -613,12 +659,14 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
         "frames_with_motion": motion_active_frames,
         "person_active_frames": person_active_frames,
         "frames_with_person": person_active_frames,
-        "person_detector_frames": person_detector_frames,
-        "frames_with_person_detector": person_detector_frames,
+        "person_detector_frames": person_detector_runs,
+        "person_detector_runs": person_detector_runs,
+        "frames_with_person_detector": person_detector_runs,
         "motion_event_count": motion_event_count,
         "person_event_count": person_event_count,
         "sia_activation_count": sia_activation_count,
-        "action_inferences": sia_activation_count,
+        "sia_inference_iterations": pipeline.sia_inference_count,
+        "action_inferences": pipeline.sia_inference_count,
         "frames_with_sia_active": active_frames,
         "sia_stride_wait_frames": sia_stride_wait_frames,
         "sia_trigger_reason_counts": dict(sorted(sia_trigger_reason_counts.items())),
@@ -630,7 +678,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
         "motion_frame_fraction": round(motion_active_frames / frames_read, 4) if frames_read > 0 else None,
         "person_frame_fraction": round(person_active_frames / frames_read, 4) if frames_read > 0 else None,
         "sia_active_frame_fraction": round(active_frames / frames_read, 4) if frames_read > 0 else None,
-        "person_detector_frame_fraction": round(person_detector_frames / frames_read, 4) if frames_read > 0 else None,
+        "person_detector_frame_fraction": round(person_detector_runs / frames_read, 4) if frames_read > 0 else None,
         "output_fps": round(writer_fps, 3) if writer is not None else None,
         "output_duration_s": round(frames_written / writer_fps, 3) if writer is not None and writer_fps > 0 else None,
         "monitor_source": system_monitor.source,
@@ -649,6 +697,12 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
             "precision": config.precision,
             "autocast": config.autocast,
             "sia_target_fps": config.sia_target_fps,
+            "adaptive_sia_target_fps": config.adaptive_sia_target_fps,
+            "adaptive_sia_warmup_frames": config.adaptive_sia_warmup_frames,
+            "adaptive_sia_utilization": config.adaptive_sia_utilization,
+            "adaptive_sia_smoothing": config.adaptive_sia_smoothing,
+            "adaptive_sia_min_fps": config.adaptive_sia_min_fps,
+            "adaptive_sia_max_fps": config.adaptive_sia_max_fps,
             "render_enabled": config.render_enabled,
             "show_active_tiers": config.show_active_tiers,
             "show_preview": config.show_preview,
@@ -673,6 +727,11 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
             f"Precision: {config.precision}",
             f"Autocast enabled: {config.autocast}",
             f"SiA target FPS cap: {config.sia_target_fps}",
+            f"Adaptive SiA cap enabled: {config.adaptive_sia_target_fps}",
+            f"Adaptive SiA warmup frames: {config.adaptive_sia_warmup_frames}",
+            f"Adaptive SiA utilization: {config.adaptive_sia_utilization}",
+            f"Adaptive SiA effective final FPS cap: {round(pipeline.current_sia_target_fps, 3)}",
+            f"Adaptive SiA cap updates: {pipeline.adaptive_cap_updates}",
             f"Frames read: {frames_read}",
             f"Frames dropped: {frames_dropped}",
             f"Active frames: {active_frames}",
@@ -681,7 +740,7 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
             f"Frames written: {frames_written}",
             f"Motion-active frames: {motion_active_frames}",
             f"Person-active frames: {person_active_frames}",
-            f"Person-detector frames: {person_detector_frames}",
+            f"Person-detector runs: {person_detector_runs}",
             f"Motion events: {motion_event_count}",
             f"Person events: {person_event_count}",
             f"SiA activations: {sia_activation_count}",

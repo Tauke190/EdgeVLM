@@ -25,6 +25,7 @@ class AlwaysOnSIAPipeline:
                 threshold_area=config.motion_threshold_area,
                 motion_frames=config.motion_frames,
                 cooldown_frames=config.motion_cooldown_frames,
+                min_on_time=config.motion_min_on_time,
                 blur_kernel=config.motion_blur_kernel,
                 learning_rate=config.motion_learning_rate,
             )
@@ -37,6 +38,7 @@ class AlwaysOnSIAPipeline:
                 device=config.device,
                 stride=config.person_stride,
                 cooldown_frames=config.person_cooldown_frames,
+                min_on_time=config.person_min_on_time,
                 hit_threshold=config.person_hit_threshold,
                 scale=config.person_scale,
                 resize_width=config.person_resize_width,
@@ -50,6 +52,9 @@ class AlwaysOnSIAPipeline:
         self.last_completed_predictions = None
         self.last_action_persist_deadline_s = None
         self.sia_inference_count = 0
+        self.adaptive_cap_updates = 0
+        self.adaptive_active_loop_ema_s = None
+        self.current_sia_target_fps = 0.0 if config.adaptive_sia_target_fps else float(config.sia_target_fps)
 
     def _render_in_pipeline_enabled(self):
         return self.config.render_enabled and self.config.mode != "live"
@@ -202,11 +207,63 @@ class AlwaysOnSIAPipeline:
         return False
 
     def _sia_rate_wait_active(self, now_s):
-        target_fps = float(self.config.sia_target_fps)
+        target_fps = float(self.current_sia_target_fps)
         if target_fps <= 0.0 or self.last_sia_wall_time is None:
             return False
         min_interval_s = 1.0 / target_fps
         return (now_s - self.last_sia_wall_time) < min_interval_s
+
+    def _adaptive_cap_enabled(self):
+        return bool(self.config.adaptive_sia_target_fps)
+
+    def _adaptive_cap_ready(self):
+        return self.sia_inference_count >= int(self.config.adaptive_sia_warmup_frames)
+
+    def _adaptive_cap_ema_ms(self):
+        if self.adaptive_active_loop_ema_s is None:
+            return None
+        return self.adaptive_active_loop_ema_s * 1000.0
+
+    def _adaptive_cap_status(self):
+        return {
+            "sia_target_fps_effective": float(self.current_sia_target_fps),
+            "adaptive_sia_target_fps_enabled": self._adaptive_cap_enabled(),
+            "adaptive_sia_target_fps_ready": self._adaptive_cap_ready(),
+            "adaptive_sia_target_fps_updates": int(self.adaptive_cap_updates),
+            "adaptive_sia_active_loop_ema_ms": self._adaptive_cap_ema_ms(),
+        }
+
+    def _update_adaptive_sia_target_fps(self, active_loop_s):
+        if not self._adaptive_cap_enabled():
+            return
+        smoothing = min(max(float(self.config.adaptive_sia_smoothing), 0.0), 1.0)
+        if self.adaptive_active_loop_ema_s is None:
+            self.adaptive_active_loop_ema_s = active_loop_s
+        else:
+            self.adaptive_active_loop_ema_s = (
+                (1.0 - smoothing) * self.adaptive_active_loop_ema_s
+                + smoothing * active_loop_s
+            )
+        if not self._adaptive_cap_ready():
+            self.current_sia_target_fps = 0.0
+            return
+        ema_s = self.adaptive_active_loop_ema_s
+        if ema_s <= 0.0:
+            return
+        measured_fps = 1.0 / ema_s
+        utilization = max(float(self.config.adaptive_sia_utilization), 0.01)
+        target_fps = measured_fps * utilization
+        min_fps = max(float(self.config.adaptive_sia_min_fps), 0.0)
+        max_fps = self.config.adaptive_sia_max_fps
+        if max_fps is not None and max_fps > 0.0:
+            target_fps = min(target_fps, float(max_fps))
+        target_fps = max(target_fps, min_fps)
+        self.current_sia_target_fps = target_fps
+        self.adaptive_cap_updates += 1
+
+    def _result(self, payload, gate_state, active, now_s=None):
+        payload.update(self._adaptive_cap_status())
+        return self._finalize_result(payload, gate_state, active=active, now_s=now_s)
 
     def _finalize_result(self, result, gate_state, active, now_s=None):
         tier_status = self._tier_status(gate_state=gate_state, active=active, now_s=now_s)
@@ -259,7 +316,7 @@ class AlwaysOnSIAPipeline:
                 frame,
                 tier_status=self._tier_status(gate_state=gate_state, active=False, now_s=frame_start_s),
             )
-            return self._finalize_result({
+            return self._result({
                 "active": False,
                 "output_ready": False,
                 "scheduler_state": scheduler_state,
@@ -284,7 +341,7 @@ class AlwaysOnSIAPipeline:
                 self.buffer.render_frame(),
                 tier_status=self._tier_status(gate_state=gate_state, active=False, now_s=frame_start_s),
             )
-            return self._finalize_result({
+            return self._result({
                 "active": False,
                 "output_ready": True,
                 "scheduler_state": scheduler_state,
@@ -308,7 +365,7 @@ class AlwaysOnSIAPipeline:
                 self.buffer.render_frame(),
                 tier_status=self._tier_status(gate_state=gate_state, active=False, now_s=frame_start_s),
             )
-            return self._finalize_result({
+            return self._result({
                 "active": False,
                 "output_ready": True,
                 "scheduler_state": scheduler_state,
@@ -333,7 +390,7 @@ class AlwaysOnSIAPipeline:
                     self.buffer.render_frame(),
                     tier_status=self._tier_status(gate_state=gate_state, active=False, now_s=frame_start_s),
                 )
-                return self._finalize_result({
+                return self._result({
                     "active": False,
                     "output_ready": True,
                     "scheduler_state": scheduler_state,
@@ -358,7 +415,7 @@ class AlwaysOnSIAPipeline:
                     self.buffer.render_frame(),
                     tier_status=self._tier_status(gate_state=gate_state, active=False, now_s=frame_start_s),
                 )
-                return self._finalize_result({
+                return self._result({
                     "active": False,
                     "output_ready": True,
                     "scheduler_state": scheduler_state,
@@ -385,7 +442,7 @@ class AlwaysOnSIAPipeline:
                 self.buffer.render_frame(),
                 tier_status=self._tier_status(gate_state=gate_state, active=False, now_s=frame_start_s),
             )
-            return self._finalize_result({
+            return self._result({
                 "active": False,
                 "output_ready": True,
                 "scheduler_state": scheduler_state,
@@ -419,7 +476,15 @@ class AlwaysOnSIAPipeline:
                 render_base,
                 tier_status=self._tier_status(gate_state=gate_state, active=True, now_s=frame_start_s),
             )
-        return self._finalize_result({
+        active_loop_estimate_s = (
+            preprocess_time
+            + inference_result["timings"]["inference_s"]
+            + inference_result["timings"]["postprocess_s"]
+            + inference_result["timings"]["label_decode_s"]
+            + render_time
+        )
+        self._update_adaptive_sia_target_fps(active_loop_estimate_s)
+        return self._result({
             "active": True,
             "output_ready": True,
             "scheduler_state": self._scheduler_state(buffer_ready, gate_state, active=True),
