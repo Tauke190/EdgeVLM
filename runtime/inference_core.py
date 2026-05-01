@@ -81,7 +81,7 @@ class SIARuntimeCore:
             with text_context:
                 self.text_embeds = self.model.encode_text(self.captions)
         self.text_embeds = F.normalize(self.text_embeds, dim=-1)
-        self.postprocess = RuntimePostProcessor(config.threshold)
+        self.postprocess = RuntimePostProcessor(config.threshold, config.human_confidence_threshold)
 
     def infer_clip(self, clip_tensor, frame_size):
         timings = {

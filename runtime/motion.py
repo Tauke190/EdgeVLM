@@ -17,6 +17,10 @@ class MotionGate:
         self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(detectShadows=True)
         self.kernel_open = np.ones((3, 3), np.uint8)
         self.kernel_close = np.ones((5, 5), np.uint8)
+        self.reset()
+
+    def reset(self):
+        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(detectShadows=True)
         self.motion_frame_count = 0
         self.cooldown_count = 0
         self.motion_active = False

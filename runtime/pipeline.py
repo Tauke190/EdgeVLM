@@ -56,6 +56,24 @@ class AlwaysOnSIAPipeline:
         self.adaptive_active_loop_ema_s = None
         self.current_sia_target_fps = 0.0 if config.adaptive_sia_target_fps else float(config.sia_target_fps)
 
+    def reset_sequence_state(self):
+        self.buffer = SlidingWindowBuffer(self.config.buffer_max_len, self.config.num_frames)
+        if self.motion_gate is not None:
+            self.motion_gate.reset()
+        if self.person_gate is not None:
+            self.person_gate.reset()
+        self.last_sia_push_index = None
+        self.last_sia_wall_time = None
+        self.prev_motion_active = False
+        self.prev_person_active = False
+        self.prev_sia_active = False
+        self.last_completed_predictions = None
+        self.last_action_persist_deadline_s = None
+        self.sia_inference_count = 0
+        self.adaptive_cap_updates = 0
+        self.adaptive_active_loop_ema_s = None
+        self.current_sia_target_fps = 0.0 if self.config.adaptive_sia_target_fps else float(self.config.sia_target_fps)
+
     def _render_in_pipeline_enabled(self):
         return self.config.render_enabled and self.config.mode != "live"
 

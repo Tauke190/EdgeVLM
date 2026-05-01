@@ -23,6 +23,7 @@ class RuntimeConfig:
     img_height: int = 240
     img_width: int = 320
     threshold: float = 0.25
+    human_confidence_threshold: float = 0.9
     top_k_labels: int | None = 3
     normalize_mean: list[float] | None = None
     normalize_std: list[float] | None = None
@@ -110,6 +111,7 @@ class RuntimeConfig:
             img_height=int(img_size[0]),
             img_width=int(img_size[1]),
             threshold=float(payload.get("threshold", 0.25)),
+            human_confidence_threshold=float(payload.get("human_confidence_threshold", 0.9)),
             top_k_labels=payload.get("top_k_labels"),
             normalize_mean=normalize_mean,
             normalize_std=normalize_std,

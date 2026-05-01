@@ -9,6 +9,7 @@ __pycache__/
 *.pyd
 
 results/
+data/
 
 # Distribution / packaging
 .Python

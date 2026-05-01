@@ -2,15 +2,16 @@ from sia import PostProcessViz
 
 
 class RuntimePostProcessor:
-    def __init__(self, threshold):
+    def __init__(self, threshold, human_confidence_threshold=0.9):
         self.threshold = float(threshold)
+        self.human_confidence_threshold = float(human_confidence_threshold)
         self.postprocess = PostProcessViz()
 
     def __call__(self, outputs, frame_size, return_stage_timings=False):
         postprocess_result = self.postprocess(
             outputs,
             frame_size,
-            human_conf=0.9,
+            human_conf=self.human_confidence_threshold,
             thresh=self.threshold,
             return_stage_timings=return_stage_timings,
         )

@@ -93,6 +93,11 @@ def parse_args():
     parser.add_argument("--motion-min-on-time", type=int, help="Minimum number of frames to keep the motion gate open before allowing it to close.")
     parser.add_argument("--person-min-on-time", type=int, help="Minimum number of frames to keep the person gate open before allowing it to close.")
     parser.add_argument("--threshold", type=float, help="Optional SiA postprocess action threshold override.")
+    parser.add_argument(
+        "--human-confidence-threshold",
+        type=float,
+        help="Optional SiA human-box confidence threshold override.",
+    )
     parser.add_argument("--top-k-labels", type=int, help="Optional number of decoded action labels to keep per detected box.")
     parser.add_argument("--output-root", help="Optional override for the output root.")
     parser.add_argument("--output-dir", help="Optional explicit run directory for this invocation.")
@@ -135,6 +140,8 @@ def build_raw_config(args):
         raw_config["person_min_on_time"] = args.person_min_on_time
     if getattr(args, "threshold", None) is not None:
         raw_config["threshold"] = args.threshold
+    if getattr(args, "human_confidence_threshold", None) is not None:
+        raw_config["human_confidence_threshold"] = args.human_confidence_threshold
     if getattr(args, "top_k_labels", None) is not None:
         raw_config["top_k_labels"] = args.top_k_labels
     if getattr(args, "output_root", None):
@@ -526,6 +533,7 @@ def run_offline_runtime(
         "buffer_max_len": config.buffer_max_len,
         "sample_indices": pipeline.buffer.sample_indices.tolist(),
         "threshold": config.threshold,
+        "human_confidence_threshold": config.human_confidence_threshold,
         "max_frames": config.max_frames,
         "top_k_labels": config.top_k_labels,
         "sync_cuda_timing": config.sync_cuda_timing,
@@ -591,6 +599,7 @@ def run_offline_runtime(
             "precision": config.precision,
             "autocast": config.autocast,
             "top_k_labels": config.top_k_labels,
+            "human_confidence_threshold": config.human_confidence_threshold,
             "sia_target_fps": config.sia_target_fps,
             "adaptive_sia_target_fps": config.adaptive_sia_target_fps,
             "adaptive_sia_warmup_frames": config.adaptive_sia_warmup_frames,
