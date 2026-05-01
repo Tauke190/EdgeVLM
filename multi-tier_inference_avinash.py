@@ -1,3 +1,29 @@
+"""
+multi-tier_inference_avinash.py
+
+Hierarchical three-tier real-time surveillance inference pipeline.
+
+Pipeline overview:
+  Tier 1 — Motion Detection (CPU):
+    MOG2 background subtraction with morphological filtering detects activity
+    regions. Only frames with motion above a minimum contour area threshold
+    advance to the next tier, drastically reducing GPU usage on idle scenes.
+
+  Tier 2 — Person Detection (YOLOv8n / MobileNet-SSD, GPU):
+    Run only when motion is active (or during the warmup phase). Localises
+    every person in the frame with bounding boxes that are passed to Tier 3.
+    Stride-based caching allows boxes to be reused across consecutive frames
+    to further reduce inference calls.
+
+  Tier 3 — Action Classification (SIA Vision-Language Model, GPU):
+    Spatio-temporal action recognition on a sliding 9-frame window. Vision
+    embeddings are matched against pre-encoded text embeddings via cosine
+    similarity to produce open-vocabulary action labels for each detected
+    person. Triggered only when persons are present.
+
+Usage:
+    python multi-tier_inference_avinash.py -F <video_path> [options]
+"""
 import os
 import sys
 import cv2
@@ -69,6 +95,7 @@ if args.person_stride < 1:
 if args.action_stride < 1:
     raise ValueError("--action-stride must be >= 1")
 
+# BGR colour map used for visualisation overlays (OpenCV uses BGR not RGB)
 COLORS = {
     "red": (0, 0, 255),
     "green": (0, 255, 0),
@@ -86,29 +113,48 @@ thickness = args.line
 
 
 def get_process_memory_mb():
+    """Read the current process RSS (Resident Set Size) from /proc/self/status.
+
+    Returns:
+        float: Memory usage in megabytes, or None if unavailable.
+    """
     try:
         with open("/proc/self/status", "r", encoding="utf-8") as handle:
             for line in handle:
-                if line.startswith("VmRSS:"):
+                if line.startswith("VmRSS:"):  # VmRSS = physical RAM used by this process
                     parts = line.split()
-                    return int(parts[1]) / 1024.0
+                    return int(parts[1]) / 1024.0  # convert kB → MB
     except Exception:
         return None
     return None
 
 
 def get_cuda_memory_summary(device):
+    """Return CUDA allocated and reserved memory for the current device.
+
+    Returns:
+        tuple(float, float) | None: (allocated_MB, reserved_MB) or None when
+        CUDA is unavailable or a CPU device is specified.
+    """
     if not torch.cuda.is_available():
         return None
     if isinstance(device, str) and not device.startswith("cuda"):
         return None
 
-    allocated_mb = torch.cuda.memory_allocated() / (1024 ** 2)
-    reserved_mb = torch.cuda.memory_reserved() / (1024 ** 2)
+    allocated_mb = torch.cuda.memory_allocated() / (1024 ** 2)  # bytes → MB
+    reserved_mb = torch.cuda.memory_reserved() / (1024 ** 2)    # bytes → MB
     return allocated_mb, reserved_mb
 
 
 def make_autocast_context(enabled):
+    """Return a torch.autocast context for FP16 inference, or a no-op context.
+
+    Args:
+        enabled (bool): When True, wraps computation in float16 autocast.
+
+    Returns:
+        context manager: autocast if enabled, otherwise nullcontext.
+    """
     if enabled:
         return torch.autocast(device_type="cuda", dtype=torch.float16)
     return nullcontext()
@@ -221,6 +267,7 @@ action_gate_frame_count = 0
 
 
 def load_json(path):
+    """Load and return a JSON file, raising ValueError if the file is empty."""
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
     if not data:
@@ -228,20 +275,50 @@ def load_json(path):
     return data
 
 def build_text_embedding_bank(model, prompt_groups):
+    """Pre-encode all action prompt groups into a stacked embedding matrix.
+
+    Each action may have multiple natural-language prompts (augmented by GPT).
+    All prompts for an action are encoded, L2-normalised, then mean-pooled into
+    a single representative embedding so cosine similarity works correctly at
+    inference time.
+
+    Args:
+        model: SIA model with an `encode_text` method.
+        prompt_groups (list[list[str]]): One list of prompts per action class.
+
+    Returns:
+        torch.Tensor: Shape [num_actions, embed_dim], one row per action.
+    """
     embedding_bank = []
     for prompts in prompt_groups:
         if not prompts:
             raise ValueError("Encountered an action with no prompts")
-        prompt_embeds = model.encode_text(prompts)
-        prompt_embeds = F.normalize(prompt_embeds, dim=-1)
-        pooled_embed = prompt_embeds.mean(dim=0)
-        pooled_embed = F.normalize(pooled_embed, dim=-1)
+        prompt_embeds = model.encode_text(prompts)          # [N, D]
+        prompt_embeds = F.normalize(prompt_embeds, dim=-1)  # unit vectors
+        pooled_embed = prompt_embeds.mean(dim=0)            # average over N prompts
+        pooled_embed = F.normalize(pooled_embed, dim=-1)    # re-normalise after averaging
         embedding_bank.append(pooled_embed)
-    return torch.stack(embedding_bank, dim=0)
+    return torch.stack(embedding_bank, dim=0)  # [num_actions, D]
 
 def resolve_actions_for_inference(act_map_file):
-    gpt_ava_data = load_json("gpt/GPT_AVA.json")
-    action_map = load_json(act_map_file)
+    """Build display labels and GPT prompt groups from an external action mapping.
+
+    The mapping file (e.g. MEVA_to_GPT_AVA.json) translates domain-specific
+    action names to their AVA equivalents, which are then resolved to GPT-
+    generated natural-language prompts stored in GPT_AVA.json.
+
+    Args:
+        act_map_file (str): Path to a JSON file mapping action → AVA action key.
+
+    Returns:
+        tuple:
+            - display_labels (list[str]): Human-readable action names.
+            - prompt_groups (list[list[str]]): Prompt lists per action for
+              text embedding.
+            - unresolved_actions (list[str]): Actions not found in GPT_AVA.json.
+    """
+    gpt_ava_data = load_json("gpt/GPT_AVA.json")  # GPT-generated text prompts per AVA action
+    action_map = load_json(act_map_file)            # domain-label → AVA-label mapping
     display_labels = []
     prompt_groups = []
     unresolved_actions = []

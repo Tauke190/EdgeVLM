@@ -1,3 +1,21 @@
+"""
+inference.py
+
+Offline single-tier action detection inference using the SIA (Spatio-temporal
+Interactive Action) vision-language model.
+
+This script runs SIA on every frame of a video without any hierarchical
+gating (no motion or person pre-filtering). It is intended for:
+  - Benchmarking the raw SIA model accuracy on a labelled dataset.
+  - Quick evaluation where computational efficiency is not the priority.
+
+The model encodes a 9-frame temporal window with a sliding buffer. Text
+embeddings for the target actions are pre-computed once and matched against
+vision features via cosine similarity to produce per-person action labels.
+
+Usage:
+    python inference.py -F <video_path> --act-file <actions.json/txt> [options]
+"""
 import os
 import json
 import numpy as np
@@ -114,25 +132,27 @@ try:
 except ImportError:
     print("thop not installed, skipping FLOPS measurement")
 
-imgsize = (240, 320)
+imgsize = (240, 320)  # Resize resolution fed into the SIA vision encoder
 output_path = 'pred_' + args.F.split('.')[0] + '.mp4'
 writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), 25, (frame_width, frame_height))
 
+# Sliding window buffer: holds the last `buffer_max_len` resized frames.
+# Every inference call samples 9 evenly-spaced frames from this buffer.
 buffer_max_len = 72
-mididx = buffer_max_len // 2
-buffer = []
-plotbuffer = []
+mididx = buffer_max_len // 2  # Mid-index used for box temporal alignment
+buffer = []       # Resized frames fed to the model
+plotbuffer = []   # Original-resolution frames for visualisation overlay
 
-# Store last prediction for real-time display
+# Store last prediction so labels persist on-screen between inference calls
 last_boxes = None
 last_labels = None
 last_scores = None
 
-postprocess = PostProcessViz()
+postprocess = PostProcessViz()  # Converts raw model outputs to boxes + labels
 init = 0
 ret = True
 frame_count = 0
-forward_passes = 0
+forward_passes = 0  # Counts actual SIA forward passes for throughput reporting
 
 print("Starting inference...")
 while ret:

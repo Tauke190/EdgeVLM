@@ -1,3 +1,19 @@
+"""
+demo.py
+
+Interactive offline demo for the SIA action detection model.
+
+Displays inference results in a full-screen OpenCV window, overlaying
+predicted bounding boxes and action labels on each frame. Waits for a
+keypress before processing starts so the buffer has time to fill.
+
+Targeted at quick visual verification of model quality. For quantitative
+benchmarking use inference.py; for efficient edge deployment use
+multi-tier_inference_avinash.py.
+
+Usage:
+    python demo.py -F <video_path> -act <action1,action2,...> [options]
+"""
 import os
 import numpy as np
 import cv2
