@@ -32,14 +32,3 @@ python multi-tier_inference_avinash.py -F <video.mp4> --sia-precision fp16 --out
 | `--output-dir` | `.` | Output directory |
 | `--debug` | off | Overlay tier states |
 
-## Training
-```bash
-python train_avak.py -SIZE b16 -TRAIN AVAK \
-  -AVA <ava_dir> -KINETICS <k700_dir> --TXTAUG --TXTLORA -JSON stats.json
-```
-
-## Evaluation
-```bash
-python val_avak.py -SIZE b16 -VAL UCF24 \
-  -UCF24 <ucf24_dir> -ANNOUCF24 datasets/anno/UCF101v2-GT.pkl -JSON results.json
-```
