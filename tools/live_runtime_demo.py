@@ -395,7 +395,9 @@ def run_live_runtime(raw_config, invoked_command, run_name="live_runtime_demo", 
             if not result.get("tier_status", {}).get("action_display_active", False):
                 last_completed_predictions = None
             if result["active"]:
-                last_completed_predictions = freeze_predictions(result)
+                frozen_predictions = freeze_predictions(result)
+                if frozen_predictions["boxes"] or not config.hold_predictions_until_next_detection:
+                    last_completed_predictions = frozen_predictions
             output_frame = build_output_frame(
                 frame,
                 result,

@@ -1,5 +1,6 @@
 import argparse
 from collections import Counter
+import json
 from pathlib import Path
 import shlex
 import sys
@@ -43,6 +44,36 @@ EVENT_LOG_FIELDNAMES = [
     "notes",
 ]
 
+SIA_INFERENCE_FRAME_FIELDNAMES = [
+    "video_path",
+    "pipeline_mode",
+    "runtime_frame_index",
+    "center_frame_index",
+    "buffer_start_frame_index",
+    "buffer_end_frame_index",
+    "sample_frame_indices",
+    "scheduler_state",
+    "sia_trigger_reason",
+    "detections",
+]
+
+PREDICTION_FIELDNAMES = [
+    "video_path",
+    "pipeline_mode",
+    "runtime_frame_index",
+    "center_frame_index",
+    "buffer_start_frame_index",
+    "buffer_end_frame_index",
+    "sample_frame_indices",
+    "box_index",
+    "x1",
+    "y1",
+    "x2",
+    "y2",
+    "predicted_label",
+    "score",
+]
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Offline runtime demo built on the shared runtime core.")
@@ -61,6 +92,8 @@ def parse_args():
     parser.add_argument("--adaptive-sia-max-fps", type=float, help="Maximum adaptive SiA FPS cap after warmup.")
     parser.add_argument("--motion-min-on-time", type=int, help="Minimum number of frames to keep the motion gate open before allowing it to close.")
     parser.add_argument("--person-min-on-time", type=int, help="Minimum number of frames to keep the person gate open before allowing it to close.")
+    parser.add_argument("--threshold", type=float, help="Optional SiA postprocess action threshold override.")
+    parser.add_argument("--top-k-labels", type=int, help="Optional number of decoded action labels to keep per detected box.")
     parser.add_argument("--output-root", help="Optional override for the output root.")
     parser.add_argument("--output-dir", help="Optional explicit run directory for this invocation.")
     parser.add_argument("--max-frames", type=int, help="Optional cap on frames read from the source video.")
@@ -73,42 +106,111 @@ def build_raw_config(args):
     raw_config = load_json(args.config)
     if args.video:
         raw_config["video_path"] = args.video
-    if args.weights:
+    if getattr(args, "weights", None):
         raw_config["weights_path"] = args.weights
-    if args.precision:
+    if getattr(args, "precision", None):
         raw_config["precision"] = args.precision
         raw_config["autocast"] = args.precision == "fp16"
-    if args.backend_name:
+    if getattr(args, "backend_name", None):
         raw_config["backend_name"] = args.backend_name
-    if args.trt_engine_path:
+    if getattr(args, "trt_engine_path", None):
         raw_config["trt_engine_path"] = args.trt_engine_path
-    if args.sia_target_fps is not None:
+    if getattr(args, "sia_target_fps", None) is not None:
         raw_config["sia_target_fps"] = args.sia_target_fps
-    if args.adaptive_sia_target_fps:
+    if getattr(args, "adaptive_sia_target_fps", False):
         raw_config["adaptive_sia_target_fps"] = True
-    if args.adaptive_sia_warmup_frames is not None:
+    if getattr(args, "adaptive_sia_warmup_frames", None) is not None:
         raw_config["adaptive_sia_warmup_frames"] = args.adaptive_sia_warmup_frames
-    if args.adaptive_sia_utilization is not None:
+    if getattr(args, "adaptive_sia_utilization", None) is not None:
         raw_config["adaptive_sia_utilization"] = args.adaptive_sia_utilization
-    if args.adaptive_sia_smoothing is not None:
+    if getattr(args, "adaptive_sia_smoothing", None) is not None:
         raw_config["adaptive_sia_smoothing"] = args.adaptive_sia_smoothing
-    if args.adaptive_sia_min_fps is not None:
+    if getattr(args, "adaptive_sia_min_fps", None) is not None:
         raw_config["adaptive_sia_min_fps"] = args.adaptive_sia_min_fps
-    if args.adaptive_sia_max_fps is not None:
+    if getattr(args, "adaptive_sia_max_fps", None) is not None:
         raw_config["adaptive_sia_max_fps"] = args.adaptive_sia_max_fps
-    if args.motion_min_on_time is not None:
+    if getattr(args, "motion_min_on_time", None) is not None:
         raw_config["motion_min_on_time"] = args.motion_min_on_time
-    if args.person_min_on_time is not None:
+    if getattr(args, "person_min_on_time", None) is not None:
         raw_config["person_min_on_time"] = args.person_min_on_time
-    if args.output_root:
+    if getattr(args, "threshold", None) is not None:
+        raw_config["threshold"] = args.threshold
+    if getattr(args, "top_k_labels", None) is not None:
+        raw_config["top_k_labels"] = args.top_k_labels
+    if getattr(args, "output_root", None):
         raw_config["output_root"] = args.output_root
-    if args.max_frames is not None:
+    if getattr(args, "max_frames", None) is not None:
         raw_config["max_frames"] = args.max_frames
-    if args.no_render:
+    if getattr(args, "no_render", False):
         raw_config["render_enabled"] = False
-    if args.show_active_tiers:
+    if getattr(args, "show_active_tiers", False):
         raw_config["show_active_tiers"] = True
     return raw_config
+
+
+def _center_frame_metadata(frame_count, buffer):
+    buffer_len = len(buffer.frame_buffer)
+    current_zero_based = frame_count - 1
+    buffer_start = current_zero_based - buffer_len + 1
+    buffer_end = current_zero_based
+    center_frame = buffer_start + buffer.mid_index
+    sample_frames = [int(buffer_start + sample_index) for sample_index in buffer.sample_indices.tolist()]
+    return {
+        "runtime_frame_index": int(frame_count),
+        "center_frame_index": int(center_frame),
+        "buffer_start_frame_index": int(buffer_start),
+        "buffer_end_frame_index": int(buffer_end),
+        "sample_frame_indices": sample_frames,
+    }
+
+
+def _as_list(value):
+    if hasattr(value, "detach"):
+        return value.detach().cpu().tolist()
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return list(value)
+
+
+def _prediction_artifact_rows(config, result, frame_meta):
+    sample_frames_json = json.dumps(frame_meta["sample_frame_indices"])
+    inference_row = {
+        "video_path": config.video_path,
+        "pipeline_mode": config.pipeline_mode,
+        "runtime_frame_index": frame_meta["runtime_frame_index"],
+        "center_frame_index": frame_meta["center_frame_index"],
+        "buffer_start_frame_index": frame_meta["buffer_start_frame_index"],
+        "buffer_end_frame_index": frame_meta["buffer_end_frame_index"],
+        "sample_frame_indices": sample_frames_json,
+        "scheduler_state": result.get("scheduler_state", ""),
+        "sia_trigger_reason": result.get("sia_trigger_reason") or "",
+        "detections": result.get("detections", 0),
+    }
+    prediction_rows = []
+    for box_index, (box, labels, scores) in enumerate(
+        zip(result.get("boxes", []), result.get("labels", []), result.get("scores", []))
+    ):
+        box_values = [float(value) for value in _as_list(box)]
+        for label, score in zip(labels, scores):
+            prediction_rows.append(
+                {
+                    "video_path": config.video_path,
+                    "pipeline_mode": config.pipeline_mode,
+                    "runtime_frame_index": frame_meta["runtime_frame_index"],
+                    "center_frame_index": frame_meta["center_frame_index"],
+                    "buffer_start_frame_index": frame_meta["buffer_start_frame_index"],
+                    "buffer_end_frame_index": frame_meta["buffer_end_frame_index"],
+                    "sample_frame_indices": sample_frames_json,
+                    "box_index": box_index,
+                    "x1": box_values[0],
+                    "y1": box_values[1],
+                    "x2": box_values[2],
+                    "y2": box_values[3],
+                    "predicted_label": label,
+                    "score": float(score),
+                }
+            )
+    return inference_row, prediction_rows
 
 
 def run_offline_runtime(
@@ -165,6 +267,8 @@ def run_offline_runtime(
     sia_activation_count = 0
     sia_stride_wait_frames = 0
     sia_trigger_reason_counts = Counter()
+    sia_inference_frame_rows = []
+    prediction_rows = []
 
     try:
         if progress_callback is not None:
@@ -193,6 +297,14 @@ def run_offline_runtime(
             if result["active"]:
                 active_frames += 1
                 clips_processed += 1
+                frame_meta = _center_frame_metadata(frame_count, pipeline.buffer)
+                inference_row, active_prediction_rows = _prediction_artifact_rows(
+                    config,
+                    result,
+                    frame_meta,
+                )
+                sia_inference_frame_rows.append(inference_row)
+                prediction_rows.extend(active_prediction_rows)
             if result["output_ready"]:
                 output_ready_frames += 1
             if result["gate_state"].get("motion_active"):
@@ -447,6 +559,8 @@ def run_offline_runtime(
         "adaptive_sia_active_loop_ema_ms_final": pipeline._adaptive_cap_ema_ms(),
         "sia_stride_wait_frames": sia_stride_wait_frames,
         "sia_trigger_reason_counts": dict(sorted(sia_trigger_reason_counts.items())),
+        "sia_inference_frame_rows": len(sia_inference_frame_rows),
+        "prediction_rows": len(prediction_rows),
         "motion_to_sia_latency_frames": activation_latency_frames,
         "scheduler_state_counts": dict(sorted(scheduler_state_counts.items())),
         "elapsed_s": round(elapsed_s, 3),
@@ -462,6 +576,7 @@ def run_offline_runtime(
         "source_fps": round(source_fps, 3) if source_fps and source_fps > 0 else None,
         "render_enabled": config.render_enabled,
         "show_active_tiers": config.show_active_tiers,
+        "hold_predictions_until_next_detection": config.hold_predictions_until_next_detection,
         "monitor_source": system_monitor.source,
         "timings": collector.summarized_timings(),
     }
@@ -486,10 +601,13 @@ def run_offline_runtime(
             "sync_cuda_timing": config.sync_cuda_timing,
             "render_enabled": config.render_enabled,
             "show_active_tiers": config.show_active_tiers,
+            "hold_predictions_until_next_detection": config.hold_predictions_until_next_detection,
         },
     )
     write_csv(run_dir / "stage_timings.csv", STAGE_TIMING_FIELDNAMES, collector.stage_rows)
     write_csv(run_dir / "event_log.csv", EVENT_LOG_FIELDNAMES, event_rows)
+    write_csv(run_dir / "sia_inference_frames.csv", SIA_INFERENCE_FRAME_FIELDNAMES, sia_inference_frame_rows)
+    write_csv(run_dir / "predictions.csv", PREDICTION_FIELDNAMES, prediction_rows)
     write_json(run_dir / "metrics.json", to_builtin(metrics))
     write_run_summary(
         run_dir / "run_summary.txt",
@@ -506,6 +624,7 @@ def run_offline_runtime(
             f"Autocast enabled: {config.autocast}",
             f"Actions: {len(pipeline.core.captions)}",
             f"Top-k labels per box: {config.top_k_labels if config.top_k_labels is not None else 'all'}",
+            f"Hold predictions until next detection: {config.hold_predictions_until_next_detection}",
             f"SiA target FPS cap: {config.sia_target_fps}",
             f"Adaptive SiA cap enabled: {config.adaptive_sia_target_fps}",
             f"Adaptive SiA warmup frames: {config.adaptive_sia_warmup_frames}",
@@ -581,6 +700,8 @@ def main():
     print(f"Metrics: {result['run_dir'] / 'metrics.json'}")
     print(f"Stage timings: {result['run_dir'] / 'stage_timings.csv'}")
     print(f"Event log: {result['run_dir'] / 'event_log.csv'}")
+    print(f"SiA inference frames: {result['run_dir'] / 'sia_inference_frames.csv'}")
+    print(f"Predictions: {result['run_dir'] / 'predictions.csv'}")
     print(f"System metrics: {result['run_dir'] / 'system_metrics.csv'}")
 
 

@@ -70,6 +70,7 @@ class RuntimeConfig:
     adaptive_sia_min_fps: float = 1.0
     adaptive_sia_max_fps: float | None = None
     action_persist_ms: float = 15.0
+    hold_predictions_until_next_detection: bool = True
     sia_min_new_frames: int = 9
     sia_retrigger_on_motion_edge: bool = True
     sia_retrigger_on_person_edge: bool = True
@@ -160,6 +161,7 @@ class RuntimeConfig:
                 else float(payload.get("adaptive_sia_max_fps"))
             ),
             action_persist_ms=float(payload.get("action_persist_ms", 15.0)),
+            hold_predictions_until_next_detection=bool(payload.get("hold_predictions_until_next_detection", True)),
             sia_min_new_frames=int(payload.get("sia_min_new_frames", 9)),
             sia_retrigger_on_motion_edge=bool(payload.get("sia_retrigger_on_motion_edge", True)),
             sia_retrigger_on_person_edge=bool(payload.get("sia_retrigger_on_person_edge", True)),

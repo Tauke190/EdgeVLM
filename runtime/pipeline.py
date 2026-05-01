@@ -120,6 +120,8 @@ class AlwaysOnSIAPipeline:
         if not self.last_completed_predictions:
             return False
         if self.config.pipeline_mode == "always_on":
+            if self.config.hold_predictions_until_next_detection:
+                return True
             if self.last_action_persist_deadline_s is None:
                 return False
             if now_s is None:
@@ -463,8 +465,10 @@ class AlwaysOnSIAPipeline:
             self.core.input_use_fp16,
         )
         inference_result = self.core.infer_clip(clip_tensor, frame_size)
-        self.last_completed_predictions = self._freeze_predictions(inference_result)
-        self.last_action_persist_deadline_s = frame_start_s + (float(self.config.action_persist_ms) / 1000.0)
+        frozen_predictions = self._freeze_predictions(inference_result)
+        if frozen_predictions["boxes"] or not self.config.hold_predictions_until_next_detection:
+            self.last_completed_predictions = frozen_predictions
+            self.last_action_persist_deadline_s = frame_start_s + (float(self.config.action_persist_ms) / 1000.0)
         self.sia_inference_count += 1
         self.last_sia_push_index = self.buffer.total_pushed
         self.last_sia_wall_time = frame_start_s

@@ -1,0 +1,28 @@
+cut_empty_admin_G326_f0_240.mp4:
+  annotation_clip: "2018-03-05.13-10-00.13-15-00.admin.G326"
+  source_start_frame: 0
+  notes: "Short empty negative control; source clip is annotated empty."
+cut_admin_G326_exit_door_f5860_6045.mp4:
+  annotation_clip: "2018-03-13.15-50-01.15-55-01.admin.G326"
+  source_start_frame: 5860
+  notes: "Short cut around person_opens_facility_door and person_exits_scene_through_structure near frames 5916-6008."
+cut_admin_G329_enters_scene_f5738_5893.mp4:
+  annotation_clip: "2018-03-13.15-50-01.15-55-01.admin.G329"
+  source_start_frame: 5738
+  notes: "Short cut around person_enters_scene_through_structure frames 5783-5848."
+cut_school_G420_talks_to_person_f5367_5748.mp4:
+  annotation_clip: "2018-03-13.15-50-01.15-55-01.school.G420"
+  source_start_frame: 5367
+  notes: "Short cut around person_talks_to_person frames 5427-5688."
+cut_hospital_G436_hug_f8040_8360.mp4:
+  annotation_clip: "2018-03-13.15-50-02.15-55-02.hospital.G436"
+  source_start_frame: 8040
+  notes: "Short far-field failure-case cut around person_embraces_person frames 8084-8318."
+pilot_admin_G329_enters_scene_f5783_5848.mp4:
+  annotation_clip: "2018-03-13.15-50-01.15-55-01.admin.G329"
+  source_start_frame: 5738
+  notes: "Action-centered subclip around person_enters_scene_through_structure frames 5783-5848."
+pilot_school_G420_talks_to_person_f5427_5688.mp4:
+  annotation_clip: "2018-03-13.15-50-01.15-55-01.school.G420"
+  source_start_frame: 5367
+  notes: "Action-centered subclip around person_talks_to_person frames 5427-5688."
